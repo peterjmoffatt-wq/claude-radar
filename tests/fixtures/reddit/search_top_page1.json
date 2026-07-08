@@ -1,0 +1,37 @@
+{
+  "kind": "Listing",
+  "data": {
+    "after": null,
+    "dist": 2,
+    "children": [
+      {
+        "kind": "t3",
+        "data": {
+          "name": "t3_top1",
+          "title": "Claude API rate limits are brutal",
+          "selftext": "",
+          "permalink": "/r/ClaudeAI/comments/top1/claude_api_rate_limits/",
+          "created_utc": 1700000000,
+          "author": "alice123",
+          "num_comments": 42,
+          "score": 150,
+          "subreddit": "ClaudeAI"
+        }
+      },
+      {
+        "kind": "t3",
+        "data": {
+          "name": "t3_top2",
+          "title": "Anyone else hitting Claude API errors?",
+          "selftext": "Getting 529s constantly during peak hours.",
+          "permalink": "/r/ClaudeAI/comments/top2/anyone_else/",
+          "created_utc": 1699990000,
+          "author": "bob456",
+          "num_comments": 17,
+          "score": 88,
+          "subreddit": "ClaudeAI"
+        }
+      }
+    ]
+  }
+}

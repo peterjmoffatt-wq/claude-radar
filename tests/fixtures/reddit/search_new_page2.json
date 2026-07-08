@@ -1,0 +1,37 @@
+{
+  "kind": "Listing",
+  "data": {
+    "after": null,
+    "dist": 2,
+    "children": [
+      {
+        "kind": "t3",
+        "data": {
+          "name": "t3_new3",
+          "title": "Old post about claude refusing tasks",
+          "selftext": "",
+          "permalink": "/r/ClaudeAI/comments/new3/refuses/",
+          "created_utc": 1000000000,
+          "author": "erin111",
+          "num_comments": 3,
+          "score": 4,
+          "subreddit": "ClaudeAI"
+        }
+      },
+      {
+        "kind": "t3",
+        "data": {
+          "name": "t3_new4",
+          "title": "Another old post",
+          "selftext": "",
+          "permalink": "/r/ClaudeAI/comments/new4/old/",
+          "created_utc": 999000000,
+          "author": "frank222",
+          "num_comments": 1,
+          "score": 2,
+          "subreddit": "ClaudeAI"
+        }
+      }
+    ]
+  }
+}

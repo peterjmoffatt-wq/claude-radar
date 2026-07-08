@@ -1,0 +1,37 @@
+{
+  "kind": "Listing",
+  "data": {
+    "after": "t3_new2",
+    "dist": 2,
+    "children": [
+      {
+        "kind": "t3",
+        "data": {
+          "name": "t3_new1",
+          "title": "Claude just went down",
+          "selftext": "",
+          "permalink": "/r/ClaudeAI/comments/new1/claude_down/",
+          "created_utc": 2000000000,
+          "author": "carol789",
+          "num_comments": 5,
+          "score": 20,
+          "subreddit": "ClaudeAI"
+        }
+      },
+      {
+        "kind": "t3",
+        "data": {
+          "name": "t3_new2",
+          "title": "Claude API key leaked in my repo, help",
+          "selftext": "",
+          "permalink": "/r/ClaudeAI/comments/new2/api_key_leak/",
+          "created_utc": 1999000000,
+          "author": "dave000",
+          "num_comments": 9,
+          "score": 12,
+          "subreddit": "ClaudeAI"
+        }
+      }
+    ]
+  }
+}
