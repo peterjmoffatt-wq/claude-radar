@@ -284,6 +284,27 @@ def get_alerts(
     return conn.execute(query, params).fetchall()
 
 
+def get_unscored_pain_points(conn: sqlite3.Connection) -> list[tuple]:
+    """Pain-point classifications with no alert ever fired for them -- either they
+    haven't had a second snapshot yet to compute velocity from, or their velocity
+    never crossed VELOCITY_THRESHOLD. Gives the dashboard visibility into real
+    signal that exists but isn't (yet, or ever) surfaced as an alert.
+    """
+    return conn.execute(
+        """
+        SELECT c.post_id, c.category, c.severity, c.issue_summary, c.model_implicated,
+               (SELECT s.url FROM snapshots s WHERE s.post_id = c.post_id
+                ORDER BY s.collected_at DESC, s.id DESC LIMIT 1) AS url,
+               (SELECT s.platform FROM snapshots s WHERE s.post_id = c.post_id
+                ORDER BY s.collected_at DESC, s.id DESC LIMIT 1) AS platform
+        FROM classifications c
+        WHERE c.is_pain_point = 1
+        AND NOT EXISTS (SELECT 1 FROM alerts a WHERE a.post_id = c.post_id)
+        ORDER BY c.classified_at DESC
+        """
+    ).fetchall()
+
+
 def resolve_alert(conn: sqlite3.Connection, post_id: str, decision: str) -> bool:
     """Resolve the most recent pending alert for a post to 'approved'/'rejected'.
 

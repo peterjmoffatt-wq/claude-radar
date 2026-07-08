@@ -526,6 +526,77 @@
     });
   }
 
+  // -- watching (classified pain points with no alert yet) --------------------
+
+  async function loadWatching() {
+    const tbody = document.getElementById("watching-body");
+    try {
+      const rows = await fetchJSON("/api/watching");
+      renderWatching(tbody, rows);
+    } catch (err) {
+      tbody.textContent = "";
+      const tr = document.createElement("tr");
+      const td = document.createElement("td");
+      td.colSpan = 5;
+      td.className = "empty-state";
+      td.textContent = "Failed to load.";
+      tr.appendChild(td);
+      tbody.appendChild(tr);
+    }
+  }
+
+  function renderWatching(tbody, rows) {
+    const count = document.getElementById("watching-count");
+    count.textContent = `${rows.length} pain point${rows.length === 1 ? "" : "s"} classified, not yet scored`;
+
+    tbody.textContent = "";
+    if (!rows.length) {
+      const tr = document.createElement("tr");
+      const td = document.createElement("td");
+      td.colSpan = 5;
+      td.className = "empty-state";
+      td.textContent = "Nothing waiting -- every classified pain point has either alerted or been ruled out.";
+      tr.appendChild(td);
+      tbody.appendChild(tr);
+      return;
+    }
+
+    rows.forEach((row) => {
+      const tr = document.createElement("tr");
+
+      const platformTd = document.createElement("td");
+      platformTd.textContent = row.platform || "—";
+
+      const categoryTd = document.createElement("td");
+      categoryTd.textContent = formatCategory(row.category);
+
+      const severityTd = document.createElement("td");
+      severityTd.appendChild(badge(SEVERITY_META[row.severity] || { dot: "muted", label: row.severity }));
+
+      const summaryTd = document.createElement("td");
+      summaryTd.className = "summary-cell";
+      summaryTd.textContent = row.issue_summary;
+
+      const postTd = document.createElement("td");
+      if (row.url) {
+        const link = document.createElement("a");
+        link.href = row.url;
+        link.target = "_blank";
+        link.rel = "noopener noreferrer";
+        link.className = "post-link";
+        link.textContent = "View post";
+        postTd.appendChild(link);
+      }
+
+      tr.appendChild(platformTd);
+      tr.appendChild(categoryTd);
+      tr.appendChild(severityTd);
+      tr.appendChild(summaryTd);
+      tr.appendChild(postTd);
+      tbody.appendChild(tr);
+    });
+  }
+
   // -- alerts table -----------------------------------------------------------
 
   function currentFilters() {
@@ -694,5 +765,6 @@
   loadClusters();
   loadLeadTime();
   loadFootprintGraph();
+  loadWatching();
   loadAlerts();
 })();

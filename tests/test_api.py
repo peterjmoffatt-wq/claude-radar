@@ -50,6 +50,32 @@ def _seed_alert(
     conn.commit()
 
 
+def _seed_classification_only(
+    conn, post_id: str, is_pain_point: bool = True, category: str = "product_bug", platform: str = "reddit"
+) -> None:
+    """A classified post with no alert row -- e.g. not enough snapshot history
+    yet to compute velocity, or velocity never crossed VELOCITY_THRESHOLD.
+    """
+    now = datetime.now(timezone.utc).isoformat()
+    conn.execute(
+        """
+        INSERT INTO classifications (
+            post_id, is_pain_point, category, model_implicated, severity,
+            issue_summary, classifier_model, classified_at
+        ) VALUES (?, ?, ?, 'claude_api_general', 'med', 'a summary', 'test-model', ?)
+        """,
+        (post_id, int(is_pain_point), category, now),
+    )
+    conn.execute(
+        """
+        INSERT INTO snapshots (post_id, platform, poll_run_id, collected_at, created_at, url, search_pass)
+        VALUES (?, ?, 'run-1', ?, ?, ?, 'top')
+        """,
+        (post_id, platform, now, now, f"https://x/{post_id}"),
+    )
+    conn.commit()
+
+
 def test_api_alerts_returns_seeded_alert(client):
     test_client, settings = client
     conn = get_connection(settings.database_path)
@@ -110,6 +136,36 @@ def test_api_clusters_groups_alerts(client):
     body = response.json()
     assert len(body) == 1
     assert body[0]["alert_count"] == 2
+
+
+def test_api_watching_returns_pain_points_with_no_alert(client):
+    test_client, settings = client
+    conn = get_connection(settings.database_path)
+    init_db(conn)
+    _seed_classification_only(conn, "t3_unscored", is_pain_point=True, platform="youtube")
+    _seed_classification_only(conn, "t3_not_pain_point", is_pain_point=False)
+    _seed_alert(conn, "t3_already_alerted", category="product_bug")
+    conn.close()
+
+    response = test_client.get("/api/watching")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert [row["post_id"] for row in body] == ["t3_unscored"]
+    assert body[0]["platform"] == "youtube"
+    assert body[0]["url"] == "https://x/t3_unscored"
+
+
+def test_api_watching_empty_when_none_pending(client):
+    test_client, settings = client
+    conn = get_connection(settings.database_path)
+    init_db(conn)
+    _seed_alert(conn, "t3_a")
+    conn.close()
+
+    response = test_client.get("/api/watching")
+
+    assert response.json() == []
 
 
 def test_api_lead_time_summary(client):

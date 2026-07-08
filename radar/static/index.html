@@ -13,6 +13,7 @@
   <nav class="tabs" role="tablist" aria-label="Dashboard sections">
     <button type="button" class="tab-button is-active" role="tab" aria-selected="true" aria-controls="tab-overview" data-tab="overview">Overview</button>
     <button type="button" class="tab-button" role="tab" aria-selected="false" aria-controls="tab-footprint" data-tab="footprint">Footprint</button>
+    <button type="button" class="tab-button" role="tab" aria-selected="false" aria-controls="tab-watching" data-tab="watching">Watching</button>
     <button type="button" class="tab-button" role="tab" aria-selected="false" aria-controls="tab-alerts" data-tab="alerts">Alerts</button>
   </nav>
 </header>
@@ -41,6 +42,31 @@
         sized by velocity. A hub with satellites in more than one color is the same issue
         showing up on more than one platform -- a bigger footprint than its size alone suggests.
       </p>
+    </div>
+  </section>
+
+  <section id="tab-watching" class="tab-panel" role="tabpanel" data-tab="watching" hidden>
+    <p class="watching-caption">
+      Posts Claude has classified as real pain points that haven't (yet, or ever) crossed
+      the velocity threshold into an alert -- usually because they only have one snapshot
+      so far, so there's no rate to compute. Real signal that exists but isn't "alerting."
+    </p>
+    <p id="watching-count" class="stat-label"></p>
+    <div class="card">
+      <table>
+        <thead>
+          <tr>
+            <th>Platform</th>
+            <th>Category</th>
+            <th>Severity</th>
+            <th>Summary</th>
+            <th>Post</th>
+          </tr>
+        </thead>
+        <tbody id="watching-body">
+          <tr><td colspan="5" class="empty-state">Loading…</td></tr>
+        </tbody>
+      </table>
     </div>
   </section>
 

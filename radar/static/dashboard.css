@@ -245,10 +245,15 @@ main {
   flex: none;
 }
 
-.footprint-caption {
+.footprint-caption,
+.watching-caption {
   font-size: 12px;
   color: var(--text-muted);
   margin: 10px 0 0;
+}
+
+.watching-caption {
+  margin: 0 0 12px;
 }
 
 .graph-edge {

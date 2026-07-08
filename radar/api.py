@@ -10,7 +10,7 @@ from pydantic import BaseModel
 
 from radar.cluster import get_clusters
 from radar.config import get_settings
-from radar.db import get_alerts, get_connection, init_db, resolve_alert
+from radar.db import get_alerts, get_connection, get_unscored_pain_points, init_db, resolve_alert
 from radar.leadtime import compute_lead_times, summarize_lead_times
 
 STATIC_DIR = Path(__file__).parent / "static"
@@ -62,6 +62,20 @@ def api_clusters() -> list[dict]:
     finally:
         conn.close()
     return [c.__dict__ for c in clusters]
+
+
+@app.get("/api/watching")
+def api_watching() -> list[dict]:
+    """Pain points that are classified but haven't (yet, or ever) crossed the
+    velocity threshold into a real alert -- see get_unscored_pain_points.
+    """
+    conn = _connect()
+    try:
+        rows = get_unscored_pain_points(conn)
+    finally:
+        conn.close()
+    keys = ("post_id", "category", "severity", "issue_summary", "model_implicated", "url", "platform")
+    return [dict(zip(keys, row)) for row in rows]
 
 
 @app.get("/api/lead-time")
