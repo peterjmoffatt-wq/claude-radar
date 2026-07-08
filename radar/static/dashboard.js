@@ -258,6 +258,10 @@
     return Math.min(Math.max(radius, 6), 28);
   }
 
+  // Watching posts have no velocity yet -- radius is reserved for a real
+  // magnitude (velocity), so give these a fixed, small, non-competing size.
+  const WATCHING_RADIUS = 7;
+
   function tickForceSimulation(nodes, edges, width, height) {
     const repulsionStrength = 70;
     const springStrength = 0.02;
@@ -321,13 +325,24 @@
   // measures 0 width -- rendering while hidden would freeze the graph's layout
   // to a wrong aspect ratio. So the data loads eagerly, but the actual SVG
   // build is deferred until the tab is first shown and has a real width.
-  let footprintAlerts = null;
+  let footprintMembers = null;
   let footprintRendered = false;
 
   async function loadFootprintGraph() {
     const container = document.getElementById("footprint-graph");
     try {
-      footprintAlerts = await fetchJSON("/api/alerts");
+      const [alerts, watching] = await Promise.all([
+        fetchJSON("/api/alerts"),
+        fetchJSON("/api/watching"),
+      ]);
+      // Merge both into one member list so a cluster's cross-platform spread is
+      // visible even before any single post has crossed the velocity threshold --
+      // scored alerts and watching (not-yet-scored) pain points are visually
+      // distinguished per-node, not filtered into separate graphs.
+      footprintMembers = [
+        ...alerts.map((a) => ({ ...a, status: "alert" })),
+        ...watching.map((w) => ({ ...w, status: "watching" })),
+      ];
       renderFootprintGraphIfVisible();
     } catch (err) {
       renderEmpty(container, "Failed to load the footprint graph.");
@@ -336,19 +351,19 @@
 
   function renderFootprintGraphIfVisible() {
     const panel = document.querySelector('.tab-panel[data-tab="footprint"]');
-    if (footprintRendered || !footprintAlerts || !panel || panel.hidden) return;
+    if (footprintRendered || !footprintMembers || !panel || panel.hidden) return;
     const container = document.getElementById("footprint-graph");
     const legend = document.getElementById("footprint-legend");
-    renderFootprintGraph(container, legend, footprintAlerts);
+    renderFootprintGraph(container, legend, footprintMembers);
     footprintRendered = true;
   }
 
-  function renderFootprintGraph(container, legendContainer, alerts) {
+  function renderFootprintGraph(container, legendContainer, members) {
     container.textContent = "";
     legendContainer.textContent = "";
 
-    if (!alerts.length) {
-      renderEmpty(container, "No alerts yet -- run `radar score` first.");
+    if (!members.length) {
+      renderEmpty(container, "No classified pain points yet -- run `radar classify` first.");
       return;
     }
 
@@ -356,12 +371,12 @@
     const height = 420;
 
     const clusters = new Map();
-    alerts.forEach((a) => {
-      const key = clusterKeyFor(a);
+    members.forEach((m) => {
+      const key = clusterKeyFor(m);
       if (!clusters.has(key)) {
-        clusters.set(key, { key, label: clusterLabelFor(a), members: [] });
+        clusters.set(key, { key, label: clusterLabelFor(m), members: [] });
       }
-      clusters.get(key).members.push(a);
+      clusters.get(key).members.push(m);
     });
     const clusterList = Array.from(clusters.values());
 
@@ -384,10 +399,12 @@
 
       cluster.members.forEach((member, mi) => {
         const spread = (mi - (cluster.members.length - 1) / 2) * 0.35;
+        const isAlert = member.status === "alert";
         const satellite = {
           type: "satellite",
-          alert: member,
-          r: velocityRadius(member.velocity),
+          member,
+          isAlert,
+          r: isAlert ? velocityRadius(member.velocity) : WATCHING_RADIUS,
           x: hub.x + Math.cos(angle + spread) * 60,
           y: hub.y + Math.sin(angle + spread) * 60,
           vx: 0,
@@ -402,7 +419,9 @@
     svg.setAttribute("viewBox", `0 0 ${width} ${height}`);
     svg.setAttribute("role", "img");
     const title = document.createElementNS(SVG_NS, "title");
-    title.textContent = "Root-cause clusters with each member post colored by platform and sized by velocity";
+    title.textContent =
+      "Root-cause clusters with each member post colored by platform; solid and sized by " +
+      "velocity for scored alerts, hollow for classified posts not yet scored";
     svg.appendChild(title);
 
     const edgeGroup = document.createElementNS(SVG_NS, "g");
@@ -426,8 +445,17 @@
       fill.setAttribute("class", n.type === "hub" ? "hub-fill" : "node-fill");
       fill.setAttribute("r", n.r);
       if (n.type === "satellite") {
-        const colorVar = PLATFORM_COLOR_VAR[n.alert.platform] || "--text-muted";
-        fill.style.fill = `var(${colorVar})`;
+        const colorVar = PLATFORM_COLOR_VAR[n.member.platform] || "--text-muted";
+        if (n.isAlert) {
+          // Solid fill = a real, scored alert.
+          fill.style.fill = `var(${colorVar})`;
+        } else {
+          // Hollow, platform-colored outline = classified but not yet scored
+          // (Watching) -- present without overstating it as a confirmed alert.
+          fill.style.fill = "none";
+          fill.style.stroke = `var(${colorVar})`;
+          fill.style.strokeWidth = "2";
+        }
       }
       g.appendChild(fill);
 
@@ -443,14 +471,19 @@
             ["Posts", n.memberCount],
           ]);
         } else {
-          const a = n.alert;
-          showTooltipForElement(g, [
-            ["Post", a.post_id],
-            ["Platform", PLATFORM_LABEL[a.platform] || a.platform],
-            ["Velocity", a.velocity.toFixed(1)],
-            ["Category", formatCategory(a.category)],
-            ["Summary", a.issue_summary],
-          ]);
+          const m = n.member;
+          const lines = [
+            ["Post", m.post_id],
+            ["Platform", PLATFORM_LABEL[m.platform] || m.platform],
+            ["Status", n.isAlert ? "Alert (scored)" : "Watching (not yet scored)"],
+          ];
+          if (n.isAlert) {
+            lines.push(["Velocity", m.velocity.toFixed(1)]);
+          } else {
+            lines.push(["Severity", (SEVERITY_META[m.severity] || {}).label || m.severity]);
+          }
+          lines.push(["Category", formatCategory(m.category)], ["Summary", m.issue_summary]);
+          showTooltipForElement(g, lines);
         }
       };
       hit.addEventListener("mouseenter", showTip);
@@ -511,9 +544,16 @@
     }
     requestAnimationFrame(step);
 
-    const platformsPresent = Array.from(new Set(alerts.map((a) => a.platform))).sort();
+    const platformGroup = document.createElement("div");
+    platformGroup.className = "legend-group";
+    const platformGroupLabel = document.createElement("span");
+    platformGroupLabel.className = "legend-group-label";
+    platformGroupLabel.textContent = "Platform:";
+    platformGroup.appendChild(platformGroupLabel);
+
+    const platformsPresent = Array.from(new Set(members.map((m) => m.platform))).sort();
     platformsPresent.forEach((p) => {
-      const item = document.createElement("div");
+      const item = document.createElement("span");
       item.className = "legend-item";
       const swatch = document.createElement("span");
       swatch.className = "legend-swatch";
@@ -522,8 +562,36 @@
       text.textContent = PLATFORM_LABEL[p] || p;
       item.appendChild(swatch);
       item.appendChild(text);
-      legendContainer.appendChild(item);
+      platformGroup.appendChild(item);
     });
+    legendContainer.appendChild(platformGroup);
+
+    // Style key: solid vs. hollow means alert vs. watching, independent of platform --
+    // grouped and labeled separately so the neutral swatch doesn't read as a platform color.
+    const statusGroup = document.createElement("div");
+    statusGroup.className = "legend-group";
+    const statusGroupLabel = document.createElement("span");
+    statusGroupLabel.className = "legend-group-label";
+    statusGroupLabel.textContent = "Status:";
+    statusGroup.appendChild(statusGroupLabel);
+
+    const styleKey = [
+      { hollow: false, label: "Alert (scored)" },
+      { hollow: true, label: "Watching (not yet scored)" },
+    ];
+    styleKey.forEach(({ hollow, label }) => {
+      const item = document.createElement("span");
+      item.className = "legend-item";
+      const swatch = document.createElement("span");
+      swatch.className = hollow ? "legend-swatch legend-swatch--hollow" : "legend-swatch";
+      if (!hollow) swatch.style.background = "var(--text-muted)";
+      const text = document.createElement("span");
+      text.textContent = label;
+      item.appendChild(swatch);
+      item.appendChild(text);
+      statusGroup.appendChild(item);
+    });
+    legendContainer.appendChild(statusGroup);
   }
 
   // -- watching (classified pain points with no alert yet) --------------------

@@ -225,15 +225,26 @@ main {
 
 .footprint-legend {
   display: flex;
-  gap: 16px;
+  gap: 24px;
   flex-wrap: wrap;
   margin-top: 10px;
   font-size: 12px;
   color: var(--text-secondary);
 }
 
-.footprint-legend .legend-item {
+.footprint-legend .legend-group {
   display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.footprint-legend .legend-group-label {
+  font-weight: 600;
+  color: var(--text-muted);
+}
+
+.footprint-legend .legend-item {
+  display: inline-flex;
   align-items: center;
   gap: 6px;
 }
@@ -243,6 +254,12 @@ main {
   height: 10px;
   border-radius: 50%;
   flex: none;
+}
+
+.footprint-legend .legend-swatch--hollow {
+  background: none !important;
+  border: 2px solid var(--text-muted);
+  box-sizing: border-box;
 }
 
 .footprint-caption,

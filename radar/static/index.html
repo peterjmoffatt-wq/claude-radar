@@ -38,9 +38,12 @@
       <div id="footprint-graph"><p class="empty-state">Loading…</p></div>
       <div id="footprint-legend" class="footprint-legend"></div>
       <p class="footprint-caption">
-        Each hub is a root-cause cluster; each satellite is a post, colored by platform and
-        sized by velocity. A hub with satellites in more than one color is the same issue
-        showing up on more than one platform -- a bigger footprint than its size alone suggests.
+        Each hub is a root-cause cluster; each satellite is a post, colored by platform.
+        Solid satellites are scored alerts, sized by velocity; hollow satellites are classified
+        pain points that haven't crossed the velocity threshold (or don't have enough snapshot
+        history) yet. A hub with satellites in more than one color -- alerted or not -- is the
+        same issue showing up on more than one platform, a bigger footprint than any single
+        post's size or status suggests.
       </p>
     </div>
   </section>
