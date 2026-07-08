@@ -10,7 +10,10 @@ from typing import Any, Callable
 
 from radar.config import Settings, get_settings, load_search_terms
 from radar.db import get_connection, init_db, write_snapshots
+from radar.sources.github import GitHubSource
+from radar.sources.hackernews import HackerNewsSource
 from radar.sources.reddit import RedditSource
+from radar.sources.stackoverflow import StackOverflowSource
 from radar.sources.x import XSource
 from radar.sources.youtube import YouTubeSource
 
@@ -56,6 +59,23 @@ def _configured_sources(
         sources.append(("x", XSource(settings, sleep_fn=sleep_fn)))
     else:
         logger.info("X source not enabled (ENABLE_X_SOURCE/X_BEARER_TOKEN); skipping.")
+
+    if settings.enable_hackernews_source:
+        sources.append(("hackernews", HackerNewsSource(settings, sleep_fn=sleep_fn)))
+    else:
+        logger.info("Hacker News source disabled (ENABLE_HACKERNEWS_SOURCE=false); skipping.")
+
+    if settings.enable_stackoverflow_source:
+        sources.append(("stackoverflow", StackOverflowSource(settings, sleep_fn=sleep_fn)))
+    else:
+        logger.info(
+            "Stack Overflow source disabled (ENABLE_STACKOVERFLOW_SOURCE=false); skipping."
+        )
+
+    if settings.has_github_credentials():
+        sources.append(("github", GitHubSource(settings, sleep_fn=sleep_fn)))
+    else:
+        logger.warning("GITHUB_TOKEN missing; skipping GitHub Issues collection.")
 
     return sources
 

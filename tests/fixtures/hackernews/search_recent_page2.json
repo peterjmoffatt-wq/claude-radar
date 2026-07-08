@@ -1,0 +1,17 @@
+{
+  "hits": [
+    {
+      "objectID": "2002",
+      "title": "Claude outage confirmed",
+      "story_text": null,
+      "url": "https://example.com/claude-outage",
+      "author": "dave_hn",
+      "points": 42,
+      "num_comments": 30,
+      "created_at": "2023-11-02T08:30:00.000Z",
+      "created_at_i": 1698914200
+    }
+  ],
+  "nbPages": 2,
+  "page": 1
+}

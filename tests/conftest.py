@@ -52,6 +52,36 @@ def load_x_fixture():
 
 
 @pytest.fixture
+def load_hackernews_fixture():
+    def _load(name: str) -> dict:
+        path = FIXTURES_DIR / "hackernews" / name
+        with open(path, encoding="utf-8") as f:
+            return json.load(f)
+
+    return _load
+
+
+@pytest.fixture
+def load_stackoverflow_fixture():
+    def _load(name: str) -> dict:
+        path = FIXTURES_DIR / "stackoverflow" / name
+        with open(path, encoding="utf-8") as f:
+            return json.load(f)
+
+    return _load
+
+
+@pytest.fixture
+def load_github_fixture():
+    def _load(name: str) -> dict:
+        path = FIXTURES_DIR / "github" / name
+        with open(path, encoding="utf-8") as f:
+            return json.load(f)
+
+    return _load
+
+
+@pytest.fixture
 def settings_factory(tmp_path):
     def _make(**overrides) -> Settings:
         defaults = dict(

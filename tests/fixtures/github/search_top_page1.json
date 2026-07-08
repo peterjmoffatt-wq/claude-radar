@@ -1,0 +1,28 @@
+{
+  "total_count": 2,
+  "incomplete_results": false,
+  "items": [
+    {
+      "id": 111,
+      "number": 42,
+      "title": "Claude API returns 429 unexpectedly under load",
+      "html_url": "https://github.com/someorg/somerepo/issues/42",
+      "user": {"login": "gh_user_1"},
+      "created_at": "2023-11-01T12:00:00Z",
+      "comments": 5,
+      "body": "We are seeing frequent 429s from the Claude API during peak hours.",
+      "reactions": {"total_count": 10}
+    },
+    {
+      "id": 112,
+      "number": 43,
+      "title": "SDK throws on Claude API authentication error",
+      "html_url": "https://github.com/someorg/somerepo/issues/43",
+      "user": {"login": "gh_user_2"},
+      "created_at": "2023-11-02T08:30:00Z",
+      "comments": 2,
+      "body": "",
+      "reactions": {"total_count": 3}
+    }
+  ]
+}

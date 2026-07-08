@@ -16,14 +16,25 @@
     low: { dot: "good", label: "Low" },
   };
 
-  // Platform identity colors for the footprint graph -- categorical slots 1/2/3,
-  // validated --pairs all (any two bubbles can end up adjacent in a force layout).
+  // Platform identity colors for the footprint graph -- categorical slots
+  // 1/2/3/4/6/8, validated --pairs all (any two bubbles can end up adjacent in a
+  // force layout; slots 5/7 were tried and rejected -- see dashboard.css).
   const PLATFORM_COLOR_VAR = {
     reddit: "--platform-reddit",
     youtube: "--platform-youtube",
     x: "--platform-x",
+    hackernews: "--platform-hackernews",
+    github: "--platform-github",
+    stackoverflow: "--platform-stackoverflow",
   };
-  const PLATFORM_LABEL = { reddit: "Reddit", youtube: "YouTube", x: "X" };
+  const PLATFORM_LABEL = {
+    reddit: "Reddit",
+    youtube: "YouTube",
+    x: "X",
+    hackernews: "Hacker News",
+    github: "GitHub",
+    stackoverflow: "Stack Overflow",
+  };
 
   // -- tooltip -----------------------------------------------------------
 

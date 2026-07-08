@@ -11,11 +11,16 @@
   --status-good: #0ca30c;
   --status-warning: #fab219;
   --status-critical: #d03b3b;
-  /* Platform identity colors -- categorical slots 1/2/3, validated --pairs all
-     (this view can place any two platforms' bubbles adjacent to each other). */
+  /* Platform identity colors -- categorical slots 1/2/3/4/6/8, validated --pairs
+     all (this view can place any two platforms' bubbles adjacent to each other).
+     Slot 5 (violet) and slot 7 (magenta) were tried and rejected: both clash with
+     slot 1 (blue) under protanopia/deuteranopia specifically in dark mode. */
   --platform-reddit: #2a78d6;
   --platform-youtube: #1baf7a;
   --platform-x: #eda100;
+  --platform-hackernews: #008300;
+  --platform-github: #e34948;
+  --platform-stackoverflow: #eb6834;
 }
 
 @media (prefers-color-scheme: dark) {
@@ -32,6 +37,9 @@
     --platform-reddit: #3987e5;
     --platform-youtube: #199e70;
     --platform-x: #c98500;
+    --platform-hackernews: #008300;
+    --platform-github: #e66767;
+    --platform-stackoverflow: #d95926;
   }
 }
 

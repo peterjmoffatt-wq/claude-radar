@@ -50,6 +50,20 @@ class Settings(BaseSettings):
     enable_x_source: bool = False
     x_bearer_token: str = ""
 
+    # Hacker News (Algolia HN Search API -- free, keyless). Off by default like
+    # every other source, even though it needs no credentials: adding a source to
+    # this codebase shouldn't silently start hitting a new external host for
+    # existing configs/tests that never opted in.
+    enable_hackernews_source: bool = False
+
+    # Stack Overflow (Stack Exchange API -- free, key optional for a higher quota)
+    enable_stackoverflow_source: bool = False
+    stackoverflow_api_key: str = ""
+
+    # GitHub Issues (needs a personal access token -- unauthenticated search is
+    # rate-limited too low, 10 req/min, to be usable across several search terms)
+    github_token: str = ""
+
     def has_reddit_credentials(self) -> bool:
         return bool(self.reddit_client_id and self.reddit_client_secret)
 
@@ -58,6 +72,9 @@ class Settings(BaseSettings):
 
     def has_x_credentials(self) -> bool:
         return self.enable_x_source and bool(self.x_bearer_token)
+
+    def has_github_credentials(self) -> bool:
+        return bool(self.github_token)
 
     @model_validator(mode="after")
     def _pepper_required_if_hashing(self) -> "Settings":

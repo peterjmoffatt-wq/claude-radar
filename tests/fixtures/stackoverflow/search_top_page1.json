@@ -1,0 +1,27 @@
+{
+  "items": [
+    {
+      "question_id": 5001,
+      "title": "Claude API returning 429 too many requests",
+      "link": "https://stackoverflow.com/questions/5001/claude-api-429",
+      "owner": {"display_name": "dev_so_1"},
+      "score": 12,
+      "answer_count": 3,
+      "view_count": 500,
+      "creation_date": 1698840000
+    },
+    {
+      "question_id": 5002,
+      "title": "How to handle Claude API authentication errors",
+      "link": "https://stackoverflow.com/questions/5002/claude-auth-errors",
+      "owner": {"display_name": "dev_so_2"},
+      "score": 4,
+      "answer_count": 1,
+      "view_count": 90,
+      "creation_date": 1698914200
+    }
+  ],
+  "has_more": false,
+  "quota_max": 300,
+  "quota_remaining": 299
+}

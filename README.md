@@ -6,14 +6,14 @@ sensitive categories behind human review, clusters them by root cause, and surfa
 important clusters on a dashboard with a lead-time metric — how early we spotted an issue
 versus when it went viral. Built as a portfolio/interview prototype.
 
-**Status: Phase 9 of 9 (all phases scaffolded).** Reddit + YouTube collectors write a time
-series of post snapshots to SQLite; a Claude-based classifier labels pain points; a scorer
-turns accelerating pain points into alerts; a human QA gate reviews sensitive categories; a
-clustering step groups alerts by root cause; a FastAPI + static dashboard surfaces all of it;
-a lead-time metric measures how early the early-warning pass caught things; and a backtest CLI
-replays scored alerts against known past incidents. An X/Twitter source exists behind a feature
-flag but ships inert (no free API tier — see Phase 9 below). See "How it works" for the full
-per-phase breakdown.
+**Status: Phase 9 of 9 (all phases scaffolded).** Collectors for Reddit, YouTube, Hacker News,
+Stack Overflow, and GitHub Issues write a time series of post snapshots to SQLite; a
+Claude-based classifier labels pain points; a scorer turns accelerating pain points into
+alerts; a human QA gate reviews sensitive categories; a clustering step groups alerts by root
+cause; a FastAPI + static dashboard surfaces all of it; a lead-time metric measures how early
+the early-warning pass caught things; and a backtest CLI replays scored alerts against known
+past incidents. An X/Twitter source exists behind a feature flag but ships inert (no free API
+tier — see Phase 9 below). See "How it works" for the full per-phase breakdown.
 
 ## Guardrails
 
@@ -47,6 +47,13 @@ Then edit `.env`:
   classify` runs and exits cleanly with a warning instead of failing.
 - Fill in `YOUTUBE_API_KEY` once you have one (below) to also collect from YouTube.
 - `ENABLE_X_SOURCE` / `X_BEARER_TOKEN` are an inert feature flag — see Phase 9 below.
+- Set `ENABLE_HACKERNEWS_SOURCE=true` to collect from Hacker News — no key needed at all
+  (Algolia's HN Search API is free and keyless). Off by default purely so enabling it is a
+  deliberate choice, not because it costs anything.
+- Set `ENABLE_STACKOVERFLOW_SOURCE=true` to collect from Stack Overflow — also no key
+  required (300 req/day shared-IP quota); optionally set `STACKOVERFLOW_API_KEY` (below) for
+  a higher quota.
+- Fill in `GITHUB_TOKEN` once you have one (below) to collect from GitHub Issues.
 
 ### Creating a Reddit API app
 
@@ -72,6 +79,23 @@ public search/listing endpoints. It never authenticates as a specific Reddit acc
 3. `search.list` calls are quota-expensive (100 units each, of a 10,000/day default quota) —
    keep `config/search_terms.yaml`'s term list reasonably small.
 
+### Getting a Stack Overflow API key (optional)
+
+Not required — Stack Exchange's API works unauthenticated at a 300-request/day shared-IP
+quota. If you want the higher 10,000/day quota, register an app at
+<https://stackapps.com/apps/oauth/register> and set `STACKOVERFLOW_API_KEY` to the resulting
+key (no OAuth flow needed for read-only public search).
+
+### Creating a GitHub personal access token
+
+1. Go to <https://github.com/settings/tokens> → **Generate new token (classic)**.
+2. No scopes are required — this only reads public issue search results. An unscoped
+   "read-only" token is enough (scopes matter for accessing private repos, which this never
+   does).
+3. Set `GITHUB_TOKEN` to the generated token. Unauthenticated GitHub search is capped at 10
+   requests/minute, too low to be usable across several search terms — a token (even with no
+   scopes) raises this to a workable rate.
+
 ## Running the collector
 
 ```bash
@@ -79,14 +103,16 @@ radar collect
 # or: python -m radar.collect
 ```
 
-Loads `config/search_terms.yaml` and runs every **configured** source (Reddit if
-`REDDIT_CLIENT_ID`/`SECRET` are set, YouTube if `YOUTUBE_API_KEY` is set, X if
-`ENABLE_X_SOURCE=true` and `X_BEARER_TOKEN` is set) — each does a `search_top` (most-engaged)
-and a `search_recent` (newest) pass per term, writing one row per matched post to the
-`snapshots` table in `data/radar.db`. A source with no credentials is skipped with a log
-line, not a hard failure; the whole command only no-ops if *no* source is configured.
-Re-running it later adds new snapshot rows for the same posts — that accumulating time series
-is what scoring uses to compute engagement velocity, and what the lead-time metric reads.
+Loads `config/search_terms.yaml` and runs every **configured** source: Reddit
+(`REDDIT_CLIENT_ID`/`SECRET`), YouTube (`YOUTUBE_API_KEY`), Hacker News
+(`ENABLE_HACKERNEWS_SOURCE=true`), Stack Overflow (`ENABLE_STACKOVERFLOW_SOURCE=true`),
+GitHub Issues (`GITHUB_TOKEN`), and X (`ENABLE_X_SOURCE=true` + `X_BEARER_TOKEN`, inert
+without paid access — see Phase 9). Each does a `search_top` (most-engaged) and a
+`search_recent` (newest) pass per term, writing one row per matched post to the `snapshots`
+table in `data/radar.db`. A source with no credentials/flag is skipped with a log line, not a
+hard failure; the whole command only no-ops if *no* source is configured. Re-running it later
+adds new snapshot rows for the same posts — that accumulating time series is what scoring uses
+to compute engagement velocity, and what the lead-time metric reads.
 
 Tuning the watchlist: edit `config/search_terms.yaml` (subreddits + search terms) and re-run.
 
@@ -185,7 +211,8 @@ no build step, no CDN, works fully offline. See `radar/api.py` and `radar/static
 pytest
 ```
 
-The whole suite runs against fixtures under `tests/fixtures/{reddit,anthropic,youtube,x}/` via
+The whole suite runs against fixtures under
+`tests/fixtures/{reddit,anthropic,youtube,x,hackernews,stackoverflow,github}/` via
 `respx`-mocked HTTP, plus FastAPI's `TestClient` for the dashboard API — no live credentials or
 network access required for any of it.
 
@@ -210,11 +237,17 @@ network access required for any of it.
   passes already wired into the Phase 1 collector.
 - **Phase 8:** Backtest CLI against known past incidents — `radar/backtest.py`,
   `config/known_incidents.yaml`.
-- **Phase 9:** `YouTubeSource` (`radar/sources/youtube.py`, YouTube Data API v3, API-key auth)
-  is fully wired into `radar collect`. `XSource` (`radar/sources/x.py`, X API v2 recent search)
-  exists behind the `ENABLE_X_SOURCE` feature flag and is fully unit-tested via mocked HTTP,
-  but modern X API has no free tier for search — it ships inert (no bearer token configured)
-  rather than assuming paid access.
+- **Phase 9:** `YouTubeSource` (`radar/sources/youtube.py`, YouTube Data API v3, API-key auth),
+  `HackerNewsSource` (`radar/sources/hackernews.py`, Algolia HN Search API, free and keyless),
+  `StackOverflowSource` (`radar/sources/stackoverflow.py`, Stack Exchange API, key optional),
+  and `GitHubSource` (`radar/sources/github.py`, REST issue search, personal access token) are
+  all fully wired into `radar collect`. `XSource` (`radar/sources/x.py`, X API v2 recent
+  search) exists behind the `ENABLE_X_SOURCE` feature flag and is fully unit-tested via mocked
+  HTTP, but modern X API has no free tier for search — it ships inert (no bearer token
+  configured) rather than assuming paid access. Reddit access itself has become harder to get
+  since Reddit gates new script-app creation behind a "valid moderation use case" review — see
+  the Reddit setup section above; the other sources exist in part because Reddit access isn't
+  guaranteed.
 
 ## Data model
 
@@ -237,14 +270,18 @@ radar/
 ├── config.py               # Settings (pydantic-settings) + search_terms.yaml / known_incidents.yaml loaders
 ├── hashing.py               # author hashing
 ├── virality.py              # virality score formula
-├── http_utils.py             # shared rate-limit/backoff HTTP helper
+├── http_utils.py             # shared rate-limit/backoff HTTP helper (handles both relative-
+│                             # seconds and absolute-epoch rate-limit-reset header semantics)
 ├── db.py                     # SQLite schema + all queries/writes
 ├── sources/
 │   ├── base.py                # Source protocol (search_top / search_recent)
 │   ├── reddit.py               # RedditSource
 │   ├── youtube.py               # YouTubeSource
-│   └── x.py                      # XSource (feature-flagged, inert without a paid token)
-├── collect.py                     # orchestration across all configured sources: `radar collect`
+│   ├── hackernews.py             # HackerNewsSource (Algolia HN Search API)
+│   ├── stackoverflow.py            # StackOverflowSource (Stack Exchange API)
+│   ├── github.py                     # GitHubSource (Issues search only, not Discussions)
+│   └── x.py                            # XSource (feature-flagged, inert without a paid token)
+├── collect.py                             # orchestration across all configured sources: `radar collect`
 ├── classify.py                     # ClaudeClassifier + orchestration: `radar classify`
 ├── score.py                         # velocity scoring + alert suppression: `radar score`
 ├── qa.py                              # human QA gate: `radar review`

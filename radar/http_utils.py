@@ -70,4 +70,18 @@ class RateLimitedClient:
         except ValueError:
             return
         if remaining_f < 1:
-            self._sleep_fn(max(0.0, reset_f))
+            self._sleep_fn(max(0.0, self._reset_delay_seconds(reset_f)))
+
+    # Different APIs give wildly different semantics for the same header name:
+    # Reddit's x-ratelimit-reset is *relative* seconds until the window ends;
+    # GitHub's is an *absolute* Unix epoch timestamp. Treating the latter as
+    # relative would mean sleeping for ~1.7 billion seconds instead of a few.
+    # A real relative countdown is seconds-to-minutes; a real epoch timestamp
+    # is on the order of 1.7+ billion -- the gap between the two is wide enough
+    # that a fixed threshold distinguishes them unambiguously.
+    _EPOCH_THRESHOLD = 1_000_000
+
+    def _reset_delay_seconds(self, reset_value: float) -> float:
+        if reset_value > self._EPOCH_THRESHOLD:
+            return reset_value - time.time()
+        return reset_value

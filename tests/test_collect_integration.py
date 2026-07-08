@@ -5,7 +5,11 @@ import respx
 
 import radar.collect as collect_module
 from radar.db import get_connection
+from radar.sources.github import SEARCH_URL as GITHUB_SEARCH_URL
+from radar.sources.hackernews import SEARCH_URL as HN_SEARCH_URL
+from radar.sources.hackernews import SEARCH_BY_DATE_URL as HN_SEARCH_BY_DATE_URL
 from radar.sources.reddit import API_BASE, TOKEN_URL
+from radar.sources.stackoverflow import SEARCH_URL as SO_SEARCH_URL
 from radar.sources.youtube import SEARCH_URL as YOUTUBE_SEARCH_URL
 from radar.sources.youtube import VIDEOS_URL as YOUTUBE_VIDEOS_URL
 
@@ -180,3 +184,55 @@ def test_run_collection_combines_multiple_configured_sources(
     }
     conn.close()
     assert platforms == {"reddit", "youtube"}
+
+
+@respx.mock
+def test_run_collection_combines_all_five_sources(
+    settings_factory,
+    load_reddit_fixture,
+    load_youtube_fixture,
+    load_hackernews_fixture,
+    load_stackoverflow_fixture,
+    load_github_fixture,
+    monkeypatch,
+):
+    monkeypatch.setattr(collect_module, "load_search_terms", _single_term_config)
+    _mock_reddit(load_reddit_fixture)
+    respx.get(YOUTUBE_SEARCH_URL).mock(
+        return_value=httpx.Response(200, json=load_youtube_fixture("search_top_page1.json"))
+    )
+    respx.get(YOUTUBE_VIDEOS_URL).mock(
+        return_value=httpx.Response(200, json=load_youtube_fixture("videos_statistics.json"))
+    )
+    respx.get(HN_SEARCH_URL).mock(
+        return_value=httpx.Response(200, json=load_hackernews_fixture("search_top_page1.json"))
+    )
+    respx.get(HN_SEARCH_BY_DATE_URL).mock(
+        return_value=httpx.Response(200, json=load_hackernews_fixture("search_top_page1.json"))
+    )
+    respx.get(SO_SEARCH_URL).mock(
+        return_value=httpx.Response(200, json=load_stackoverflow_fixture("search_top_page1.json"))
+    )
+    respx.get(GITHUB_SEARCH_URL).mock(
+        return_value=httpx.Response(200, json=load_github_fixture("search_top_page1.json"))
+    )
+
+    settings = settings_factory(
+        poll_interval_seconds=_HUGE_POLL_INTERVAL,
+        youtube_api_key="test-youtube-key",
+        enable_hackernews_source=True,
+        enable_stackoverflow_source=True,
+        github_token="test-github-token",
+    )
+    result = collect_module.run_collection(settings, sleep_fn=lambda s: None)
+
+    # 2 posts each from reddit/youtube/hackernews/stackoverflow, 2 from github --
+    # every source's fixture has 2 items, x (top + recent) passes x 5 sources.
+    assert result.snapshots_written == 20
+
+    conn = get_connection(settings.database_path)
+    platforms = {
+        row[0] for row in conn.execute("SELECT DISTINCT platform FROM snapshots").fetchall()
+    }
+    conn.close()
+    assert platforms == {"reddit", "youtube", "hackernews", "stackoverflow", "github"}

@@ -1,0 +1,17 @@
+{
+  "items": [
+    {
+      "question_id": 6002,
+      "title": "Claude API outage today?",
+      "link": "https://stackoverflow.com/questions/6002/claude-outage",
+      "owner": {"display_name": "dev_so_4"},
+      "score": 8,
+      "answer_count": 2,
+      "view_count": 150,
+      "creation_date": 1698914200
+    }
+  ],
+  "has_more": false,
+  "quota_max": 300,
+  "quota_remaining": 297
+}

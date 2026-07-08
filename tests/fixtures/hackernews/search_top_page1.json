@@ -1,0 +1,28 @@
+{
+  "hits": [
+    {
+      "objectID": "1001",
+      "title": "Claude API rate limits are brutal",
+      "story_text": null,
+      "url": "https://example.com/claude-rate-limits",
+      "author": "alice_hn",
+      "points": 250,
+      "num_comments": 80,
+      "created_at": "2023-11-01T12:00:00.000Z",
+      "created_at_i": 1698840000
+    },
+    {
+      "objectID": "1002",
+      "title": "Ask HN: Anyone else hitting Claude API 529 errors?",
+      "story_text": "Getting constant 529s during peak hours.",
+      "url": null,
+      "author": "bob_hn",
+      "points": 88,
+      "num_comments": 17,
+      "created_at": "2023-11-02T08:30:00.000Z",
+      "created_at_i": 1698914200
+    }
+  ],
+  "nbPages": 1,
+  "page": 0
+}

@@ -8,9 +8,11 @@ from pydantic import BaseModel, Field
 
 class Platform(str, Enum):
     REDDIT = "reddit"
-    HACKERNEWS = "hackernews"  # Phase 2+
-    YOUTUBE = "youtube"  # Phase 2+
-    X = "x"  # Phase 2+, feature-flagged
+    HACKERNEWS = "hackernews"
+    YOUTUBE = "youtube"
+    X = "x"  # feature-flagged
+    STACK_OVERFLOW = "stackoverflow"
+    GITHUB = "github"
 
 
 class Metrics(BaseModel):

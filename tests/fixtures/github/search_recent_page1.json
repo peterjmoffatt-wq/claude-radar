@@ -1,0 +1,17 @@
+{
+  "total_count": 2,
+  "incomplete_results": false,
+  "items": [
+    {
+      "id": 211,
+      "number": 100,
+      "title": "Claude Code refactor suggestion is wrong",
+      "html_url": "https://github.com/someorg/somerepo/issues/100",
+      "user": {"login": "gh_user_3"},
+      "created_at": "2023-11-01T12:00:00Z",
+      "comments": 1,
+      "body": "",
+      "reactions": {"total_count": 1}
+    }
+  ]
+}
