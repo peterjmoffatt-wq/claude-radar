@@ -5,10 +5,12 @@ uses an LLM to decide which are real pain points, clusters them by root cause, a
 phases) surfaces the important clusters on a dashboard with a lead-time metric — how early we
 spotted an issue versus when it went viral. Built as a portfolio/interview prototype.
 
-**Status: Phase 1 of 9.** This phase ships the repo scaffold, the data model, and a working
+**Status: Phase 2 of 9.** Phase 1 shipped the repo scaffold, the data model, and a working
 Reddit collector that polls a tuned watchlist and writes a time series of post snapshots to
-SQLite. Classification, clustering, the dashboard, and the other data sources are future
-phases — see "How it works" below for the full roadmap.
+SQLite. Phase 2 adds a Claude-based classifier that labels each collected post as a pain
+point (or not) and writes the result to SQLite. Scoring, the human QA gate, clustering, the
+dashboard, and the other data sources are future phases — see "How it works" below for the
+full roadmap.
 
 ## Guardrails
 
@@ -38,6 +40,8 @@ Then edit `.env`:
   which is the default).
 - Fill in `REDDIT_CLIENT_ID` / `REDDIT_CLIENT_SECRET` once you have a Reddit app (below).
   Until then, `radar collect` runs and exits cleanly with a warning instead of failing.
+- Fill in `ANTHROPIC_API_KEY` once you want to classify collected posts. Until then, `radar
+  classify` runs and exits cleanly with a warning instead of failing.
 
 ### Creating a Reddit API app
 
@@ -69,22 +73,42 @@ compute engagement velocity.
 
 Tuning the watchlist: edit `config/search_terms.yaml` (subreddits + search terms) and re-run.
 
+## Running the classifier
+
+```bash
+radar classify
+# or: python -m radar.classify
+```
+
+Reads up to `CLASSIFY_BATCH_LIMIT` (default 100) posts from `snapshots` that don't yet have a
+row in `classifications` (one classification per post, using its most recent snapshot), sends
+each to Claude (`CLASSIFIER_MODEL`) with a forced tool call to get a structured
+`is_pain_point` / `category` / `model_implicated` / `severity` / `issue_summary` result, and
+writes it to the `classifications` table. A single post that fails to classify (API error or
+an unusable response) is logged and skipped without failing the rest of the batch. Unlike
+`radar collect`, **this calls the paid Anthropic API** — run it deliberately, not on a tight
+poll loop.
+
 ## Tests
 
 ```bash
 pytest
 ```
 
-The whole suite runs against fixtures under `tests/fixtures/reddit/` via `respx`-mocked HTTP —
-no live Reddit credentials or network access required.
+The whole suite runs against fixtures under `tests/fixtures/reddit/` and
+`tests/fixtures/anthropic/` via `respx`-mocked HTTP — no live Reddit/Anthropic credentials or
+network access required.
 
 ## How it works (current + planned)
 
-- **Phase 1 (this phase):** `Source` interface, `RawPost`/`Classification` data models, and a
+- **Phase 1:** `Source` interface, `RawPost`/`Classification` data models, and a
   `RedditSource` collector writing snapshots to SQLite. See `radar/sources/reddit.py` and
   `radar/collect.py`.
-- **Phase 2:** Claude-based classifier (`is_pain_point`, `category`, `severity`, ...) —
-  `Classification` model and `CLASSIFIER_MODEL` config already in place, no rework needed.
+- **Phase 2 (this phase):** Claude-based classifier (`is_pain_point`, `category`, `severity`,
+  `model_implicated`, `issue_summary`), calling the Messages API directly via `httpx` (same
+  pattern as the Reddit source, reusing `RateLimitedClient`) with a forced tool call for
+  structured output. Writes one row per post to the `classifications` table. See
+  `radar/classify.py`.
 - **Phase 3:** Score + diff + velocity — suppress repeat alerts unless engagement is
   accelerating.
 - **Phase 4:** Human QA gate for sensitive categories (`abuse`, `credential_theft`, `safety`)
@@ -102,6 +126,9 @@ no live Reddit credentials or network access required.
   post id, platform, hashed author, collected/created timestamps, public metrics, a computed
   `virality_score`, and the raw text (subject to a future retention-purge job). Never a
   per-user profile.
+- `classifications` — one row per `post_id` (not a time series; a re-run replaces the prior
+  row): `is_pain_point`, `category`, `model_implicated`, `severity`, `issue_summary`, which
+  `classifier_model` produced it, and when.
 
 ## Project layout
 
@@ -117,5 +144,6 @@ radar/
 │   ├── base.py           # Source protocol (search_top / search_recent)
 │   └── reddit.py          # RedditSource
 ├── collect.py             # orchestration: python -m radar.collect
-└── cli.py                  # `radar collect`
+├── classify.py             # ClaudeClassifier + orchestration: python -m radar.classify
+└── cli.py                  # `radar collect` / `radar classify`
 ```

@@ -22,6 +22,16 @@ def load_reddit_fixture():
 
 
 @pytest.fixture
+def load_anthropic_fixture():
+    def _load(name: str) -> dict:
+        path = FIXTURES_DIR / "anthropic" / name
+        with open(path, encoding="utf-8") as f:
+            return json.load(f)
+
+    return _load
+
+
+@pytest.fixture
 def settings_factory(tmp_path):
     def _make(**overrides) -> Settings:
         defaults = dict(
@@ -30,6 +40,7 @@ def settings_factory(tmp_path):
             reddit_user_agent="claude-radar-test/0.1",
             hash_authors=True,
             author_hash_pepper="test-pepper",
+            anthropic_api_key="test-anthropic-key",
             database_path=tmp_path / "radar.db",
         )
         defaults.update(overrides)

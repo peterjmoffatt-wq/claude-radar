@@ -6,10 +6,10 @@ from pathlib import Path
 
 from radar.config import Settings
 from radar.hashing import hash_author
-from radar.models import RawPost
+from radar.models import Classification, RawPost
 from radar.virality import virality_score
 
-SCHEMA_VERSION = "1"
+SCHEMA_VERSION = "2"
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS snapshots (
@@ -36,6 +36,17 @@ CREATE TABLE IF NOT EXISTS snapshots (
 CREATE INDEX IF NOT EXISTS idx_snapshots_post_id ON snapshots(post_id);
 CREATE INDEX IF NOT EXISTS idx_snapshots_platform_created_at ON snapshots(platform, created_at);
 CREATE INDEX IF NOT EXISTS idx_snapshots_collected_at ON snapshots(collected_at);
+
+CREATE TABLE IF NOT EXISTS classifications (
+    post_id           TEXT PRIMARY KEY,
+    is_pain_point     INTEGER NOT NULL,
+    category          TEXT NOT NULL,
+    model_implicated  TEXT NOT NULL,
+    severity          TEXT NOT NULL,
+    issue_summary     TEXT NOT NULL,
+    classifier_model  TEXT NOT NULL,
+    classified_at     TEXT NOT NULL
+);
 
 CREATE TABLE IF NOT EXISTS schema_meta (
     key   TEXT PRIMARY KEY,
@@ -107,6 +118,62 @@ def write_snapshots(
             subreddit, matched_term, url, likes, comments, score, shares,
             virality_score, raw_text, search_pass
         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        rows,
+    )
+    conn.commit()
+    return len(rows)
+
+
+def get_unclassified_posts(conn: sqlite3.Connection, limit: int) -> list[tuple[str, str, str, str]]:
+    """One row per post_id (its most recent snapshot) that has no row in
+    `classifications` yet -- (post_id, platform, raw_text, url).
+    """
+    rows = conn.execute(
+        """
+        SELECT s.post_id, s.platform, s.raw_text, s.url
+        FROM snapshots s
+        WHERE s.id = (
+            SELECT s2.id FROM snapshots s2
+            WHERE s2.post_id = s.post_id
+            ORDER BY s2.collected_at DESC, s2.id DESC
+            LIMIT 1
+        )
+        AND NOT EXISTS (SELECT 1 FROM classifications c WHERE c.post_id = s.post_id)
+        LIMIT ?
+        """,
+        (limit,),
+    ).fetchall()
+    return rows
+
+
+def write_classifications(
+    conn: sqlite3.Connection, classifications: list[Classification], classifier_model: str
+) -> int:
+    if not classifications:
+        return 0
+
+    classified_at = datetime.now(timezone.utc).isoformat()
+    rows = [
+        (
+            c.post_id,
+            int(c.is_pain_point),
+            c.category.value,
+            c.model_implicated.value,
+            c.severity.value,
+            c.issue_summary,
+            classifier_model,
+            classified_at,
+        )
+        for c in classifications
+    ]
+
+    conn.executemany(
+        """
+        INSERT OR REPLACE INTO classifications (
+            post_id, is_pain_point, category, model_implicated, severity,
+            issue_summary, classifier_model, classified_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
         """,
         rows,
     )

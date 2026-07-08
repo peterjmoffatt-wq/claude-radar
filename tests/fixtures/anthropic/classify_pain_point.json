@@ -1,0 +1,23 @@
+{
+  "id": "msg_01ABC123",
+  "type": "message",
+  "role": "assistant",
+  "model": "claude-haiku-4-5-20251001",
+  "content": [
+    {
+      "type": "tool_use",
+      "id": "toolu_01XYZ789",
+      "name": "record_classification",
+      "input": {
+        "is_pain_point": true,
+        "category": "product_bug",
+        "model_implicated": "claude_api_general",
+        "severity": "high",
+        "issue_summary": "Users report frequent 529 errors from the Claude API during peak hours."
+      }
+    }
+  ],
+  "stop_reason": "tool_use",
+  "stop_sequence": null,
+  "usage": {"input_tokens": 210, "output_tokens": 58}
+}

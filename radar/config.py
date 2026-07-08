@@ -37,9 +37,10 @@ class Settings(BaseSettings):
     # Storage
     database_path: Path = Path("data/radar.db")
 
-    # Classifier (Phase 2 -- not called yet, wired up now so config won't need rework)
+    # Classifier
     anthropic_api_key: str = ""
     classifier_model: str = "claude-haiku-4-5-20251001"
+    classify_batch_limit: int = 100
 
     def has_reddit_credentials(self) -> bool:
         return bool(self.reddit_client_id and self.reddit_client_secret)
