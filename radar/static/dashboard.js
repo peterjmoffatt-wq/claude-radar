@@ -389,6 +389,7 @@
         label: cluster.label,
         platformCount: new Set(cluster.members.map((m) => m.platform)).size,
         memberCount: cluster.members.length,
+        alertCount: cluster.members.filter((m) => m.status === "alert").length,
         r: 22,
         x: width / 2 + Math.cos(angle) * (width * 0.28),
         y: height / 2 + Math.sin(angle) * (height * 0.28),
@@ -442,7 +443,10 @@
       g.setAttribute("class", n.type === "hub" ? "graph-hub" : "graph-node");
 
       const fill = document.createElementNS(SVG_NS, "circle");
-      fill.setAttribute("class", n.type === "hub" ? "hub-fill" : "node-fill");
+      fill.setAttribute(
+        "class",
+        n.type === "hub" ? "hub-fill" + (n.alertCount > 0 ? " hub-fill--has-alert" : "") : "node-fill"
+      );
       fill.setAttribute("r", n.r);
       if (n.type === "satellite") {
         const colorVar = PLATFORM_COLOR_VAR[n.member.platform] || "--text-muted";
@@ -469,6 +473,12 @@
             ["Cluster", n.label],
             ["Platforms", n.platformCount],
             ["Posts", n.memberCount],
+            [
+              "Status",
+              n.alertCount > 0
+                ? `⚠ ${n.alertCount} active alert${n.alertCount === 1 ? "" : "s"}`
+                : "No active alerts yet",
+            ],
           ]);
         } else {
           const m = n.member;
@@ -591,6 +601,20 @@
       item.appendChild(text);
       statusGroup.appendChild(item);
     });
+
+    // A hub is never a status color itself (it can span platforms), but it does
+    // get a red ring the moment any of its members is a real alert -- flagged
+    // here explicitly so that ring is never the only thing carrying the meaning.
+    const hubAlertItem = document.createElement("span");
+    hubAlertItem.className = "legend-item";
+    const hubAlertSwatch = document.createElement("span");
+    hubAlertSwatch.className = "legend-swatch legend-swatch--hub-alert";
+    const hubAlertText = document.createElement("span");
+    hubAlertText.textContent = "Hub with an active alert";
+    hubAlertItem.appendChild(hubAlertSwatch);
+    hubAlertItem.appendChild(hubAlertText);
+    statusGroup.appendChild(hubAlertItem);
+
     legendContainer.appendChild(statusGroup);
   }
 

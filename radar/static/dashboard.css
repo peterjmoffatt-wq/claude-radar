@@ -262,6 +262,15 @@ main {
   box-sizing: border-box;
 }
 
+.footprint-legend .legend-swatch--hub-alert {
+  width: 13px;
+  height: 13px;
+  background: var(--text-muted);
+  opacity: 0.55;
+  border: 2px solid var(--status-critical);
+  box-sizing: border-box;
+}
+
 .footprint-caption,
 .watching-caption {
   font-size: 12px;
@@ -284,6 +293,12 @@ main {
   opacity: 0.35;
   stroke: var(--surface-1);
   stroke-width: 2;
+}
+
+.graph-hub circle.hub-fill.hub-fill--has-alert {
+  opacity: 0.55;
+  stroke: var(--status-critical);
+  stroke-width: 3;
 }
 
 .graph-hub text {
