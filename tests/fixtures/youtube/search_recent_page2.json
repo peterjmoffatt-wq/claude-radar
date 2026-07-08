@@ -1,0 +1,13 @@
+{
+  "items": [
+    {
+      "id": {"videoId": "vid2"},
+      "snippet": {
+        "title": "Claude Code review",
+        "description": "A look at Claude Code's new features.",
+        "channelTitle": "DevChannel",
+        "publishedAt": "2023-11-02T08:30:00Z"
+      }
+    }
+  ]
+}

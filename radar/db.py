@@ -9,7 +9,7 @@ from radar.hashing import hash_author
 from radar.models import Classification, RawPost
 from radar.virality import virality_score
 
-SCHEMA_VERSION = "2"
+SCHEMA_VERSION = "3"
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS snapshots (
@@ -47,6 +47,20 @@ CREATE TABLE IF NOT EXISTS classifications (
     classifier_model  TEXT NOT NULL,
     classified_at     TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS alerts (
+    id                INTEGER PRIMARY KEY AUTOINCREMENT,
+    post_id           TEXT NOT NULL,
+    triggered_at      TEXT NOT NULL,
+    virality_score    REAL NOT NULL,
+    velocity          REAL NOT NULL,
+    category          TEXT NOT NULL,
+    severity          TEXT NOT NULL,
+    qa_status         TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_alerts_post_id ON alerts(post_id);
+CREATE INDEX IF NOT EXISTS idx_alerts_triggered_at ON alerts(triggered_at);
 
 CREATE TABLE IF NOT EXISTS schema_meta (
     key   TEXT PRIMARY KEY,
@@ -179,3 +193,165 @@ def write_classifications(
     )
     conn.commit()
     return len(rows)
+
+
+def get_pain_point_posts(conn: sqlite3.Connection) -> list[tuple[str, str, str]]:
+    """(post_id, category, severity) for every post classified as a pain point."""
+    return conn.execute(
+        "SELECT post_id, category, severity FROM classifications WHERE is_pain_point = 1"
+    ).fetchall()
+
+
+def get_snapshot_history(conn: sqlite3.Connection, post_id: str) -> list[tuple[datetime, float]]:
+    """(collected_at, virality_score) for every snapshot of a post, oldest first."""
+    rows = conn.execute(
+        "SELECT collected_at, virality_score FROM snapshots WHERE post_id = ? ORDER BY collected_at ASC, id ASC",
+        (post_id,),
+    ).fetchall()
+    return [(datetime.fromisoformat(collected_at), score) for collected_at, score in rows]
+
+
+def get_latest_alert_velocity(conn: sqlite3.Connection, post_id: str) -> float | None:
+    row = conn.execute(
+        "SELECT velocity FROM alerts WHERE post_id = ? ORDER BY triggered_at DESC, id DESC LIMIT 1",
+        (post_id,),
+    ).fetchone()
+    return row[0] if row is not None else None
+
+
+def list_pending_alerts(
+    conn: sqlite3.Connection,
+) -> list[tuple[str, str, str, float, str, str]]:
+    """Pending alerts -- (post_id, category, severity, velocity, issue_summary, url) --
+    joined with their classification and the post's most recent snapshot url.
+
+    Only considers each post's *latest* alert row: a post can re-alert (accelerate
+    again) before its first alert is reviewed, and only the latest one is what
+    `resolve_alert` acts on -- an older still-'pending' row must not linger here.
+    """
+    return conn.execute(
+        """
+        SELECT a.post_id, a.category, a.severity, a.velocity, c.issue_summary,
+               (SELECT s.url FROM snapshots s WHERE s.post_id = a.post_id
+                ORDER BY s.collected_at DESC, s.id DESC LIMIT 1) AS url
+        FROM alerts a
+        JOIN classifications c ON c.post_id = a.post_id
+        WHERE a.id = (
+            SELECT a2.id FROM alerts a2 WHERE a2.post_id = a.post_id
+            ORDER BY a2.triggered_at DESC, a2.id DESC LIMIT 1
+        )
+        AND a.qa_status = 'pending'
+        ORDER BY a.triggered_at DESC
+        """
+    ).fetchall()
+
+
+def get_alerts(
+    conn: sqlite3.Connection,
+    status: str | None = None,
+    category: str | None = None,
+    severity: str | None = None,
+) -> list[tuple]:
+    """Each post's latest alert -- for the dashboard's filterable alert list --
+    joined with its classification and most recent snapshot's url/platform.
+    """
+    query = """
+        SELECT a.post_id, a.category, a.severity, a.velocity, a.virality_score,
+               a.qa_status, a.triggered_at, c.issue_summary, c.model_implicated,
+               (SELECT s.url FROM snapshots s WHERE s.post_id = a.post_id
+                ORDER BY s.collected_at DESC, s.id DESC LIMIT 1) AS url,
+               (SELECT s.platform FROM snapshots s WHERE s.post_id = a.post_id
+                ORDER BY s.collected_at DESC, s.id DESC LIMIT 1) AS platform
+        FROM alerts a
+        JOIN classifications c ON c.post_id = a.post_id
+        WHERE a.id = (
+            SELECT a2.id FROM alerts a2 WHERE a2.post_id = a.post_id
+            ORDER BY a2.triggered_at DESC, a2.id DESC LIMIT 1
+        )
+    """
+    params: list[str] = []
+    if status:
+        query += " AND a.qa_status = ?"
+        params.append(status)
+    if category:
+        query += " AND a.category = ?"
+        params.append(category)
+    if severity:
+        query += " AND a.severity = ?"
+        params.append(severity)
+    query += " ORDER BY a.triggered_at DESC"
+
+    return conn.execute(query, params).fetchall()
+
+
+def resolve_alert(conn: sqlite3.Connection, post_id: str, decision: str) -> bool:
+    """Resolve the most recent pending alert for a post to 'approved'/'rejected'.
+
+    Returns whether a row was actually updated (False if no pending alert exists).
+    """
+    row = conn.execute(
+        "SELECT id FROM alerts WHERE post_id = ? AND qa_status = 'pending' "
+        "ORDER BY triggered_at DESC, id DESC LIMIT 1",
+        (post_id,),
+    ).fetchone()
+    if row is None:
+        return False
+    conn.execute("UPDATE alerts SET qa_status = ? WHERE id = ?", (decision, row[0]))
+    conn.commit()
+    return True
+
+
+def get_first_seen_by_pass(conn: sqlite3.Connection) -> list[tuple[str, str, str]]:
+    """(post_id, search_pass, first_collected_at) -- earliest snapshot per (post_id, search_pass)."""
+    return conn.execute(
+        """
+        SELECT post_id, search_pass, MIN(collected_at) AS first_collected_at
+        FROM snapshots
+        GROUP BY post_id, search_pass
+        """
+    ).fetchall()
+
+
+def get_alert_timestamps(conn: sqlite3.Connection) -> list[datetime]:
+    rows = conn.execute("SELECT triggered_at FROM alerts").fetchall()
+    return [datetime.fromisoformat(row[0]) for row in rows]
+
+
+def get_alerts_for_clustering(
+    conn: sqlite3.Connection,
+) -> list[tuple[str, str, str, str, str]]:
+    """(category, model_implicated, severity, issue_summary, triggered_at) for every alert."""
+    return conn.execute(
+        """
+        SELECT a.category, c.model_implicated, a.severity, c.issue_summary, a.triggered_at
+        FROM alerts a
+        JOIN classifications c ON c.post_id = a.post_id
+        """
+    ).fetchall()
+
+
+def write_alert(
+    conn: sqlite3.Connection,
+    post_id: str,
+    virality_score_value: float,
+    velocity: float,
+    category: str,
+    severity: str,
+    qa_status: str,
+) -> None:
+    conn.execute(
+        """
+        INSERT INTO alerts (post_id, triggered_at, virality_score, velocity, category, severity, qa_status)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            post_id,
+            datetime.now(timezone.utc).isoformat(),
+            virality_score_value,
+            velocity,
+            category,
+            severity,
+            qa_status,
+        ),
+    )
+    conn.commit()

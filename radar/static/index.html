@@ -1,0 +1,86 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Claude Radar</title>
+<link rel="stylesheet" href="/dashboard.css" />
+</head>
+<body>
+<header>
+  <h1>Claude Radar</h1>
+  <p>Public-signal early-warning dashboard for Claude / the Claude API.</p>
+</header>
+
+<main>
+  <section class="overview">
+    <div class="card">
+      <h2>Root-cause clusters</h2>
+      <div id="clusters-chart"><p class="empty-state">Loading…</p></div>
+    </div>
+    <div class="card">
+      <h2>Lead time (early-warning vs. top pass)</h2>
+      <div id="leadtime-stat"><p class="empty-state">Loading…</p></div>
+    </div>
+  </section>
+
+  <section>
+    <h2>Alerts</h2>
+    <div class="filters">
+      <label>Status
+        <select id="filter-status">
+          <option value="">All</option>
+          <option value="pending">Pending</option>
+          <option value="approved">Approved</option>
+          <option value="rejected">Rejected</option>
+          <option value="not_required">Not required</option>
+        </select>
+      </label>
+      <label>Category
+        <select id="filter-category">
+          <option value="">All</option>
+          <option value="api_abuse">API abuse</option>
+          <option value="product_bug">Product bug</option>
+          <option value="ux_confusion">UX confusion</option>
+          <option value="messaging_gap">Messaging gap</option>
+          <option value="credential_theft">Credential theft</option>
+          <option value="abuse">Abuse</option>
+          <option value="safety">Safety</option>
+          <option value="other">Other</option>
+        </select>
+      </label>
+      <label>Severity
+        <select id="filter-severity">
+          <option value="">All</option>
+          <option value="high">High</option>
+          <option value="med">Med</option>
+          <option value="low">Low</option>
+        </select>
+      </label>
+    </div>
+
+    <table>
+      <thead>
+        <tr>
+          <th>Platform</th>
+          <th>Category</th>
+          <th>Severity</th>
+          <th class="num">Velocity</th>
+          <th>QA status</th>
+          <th>Summary</th>
+          <th>Post</th>
+          <th>Actions</th>
+        </tr>
+      </thead>
+      <tbody id="alerts-body">
+        <tr><td colspan="8" class="empty-state">Loading…</td></tr>
+      </tbody>
+    </table>
+  </section>
+</main>
+
+<div id="chart-tooltip" role="tooltip"></div>
+
+<script src="/dashboard.js"></script>
+</body>
+</html>

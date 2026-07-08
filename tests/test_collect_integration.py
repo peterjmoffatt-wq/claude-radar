@@ -6,6 +6,8 @@ import respx
 import radar.collect as collect_module
 from radar.db import get_connection
 from radar.sources.reddit import API_BASE, TOKEN_URL
+from radar.sources.youtube import SEARCH_URL as YOUTUBE_SEARCH_URL
+from radar.sources.youtube import VIDEOS_URL as YOUTUBE_VIDEOS_URL
 
 # Fixture posts are dated 2023 (search_top_page1.json). A large poll interval pushes
 # `since` far enough into the past that the "recent" pass doesn't filter them out --
@@ -149,3 +151,32 @@ def test_run_collection_noop_when_credentials_missing(settings_factory):
     tables = conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()
     conn.close()
     assert tables == []
+
+
+@respx.mock
+def test_run_collection_combines_multiple_configured_sources(
+    settings_factory, load_reddit_fixture, load_youtube_fixture, monkeypatch
+):
+    monkeypatch.setattr(collect_module, "load_search_terms", _single_term_config)
+    _mock_reddit(load_reddit_fixture)
+    respx.get(YOUTUBE_SEARCH_URL).mock(
+        return_value=httpx.Response(200, json=load_youtube_fixture("search_top_page1.json"))
+    )
+    respx.get(YOUTUBE_VIDEOS_URL).mock(
+        return_value=httpx.Response(200, json=load_youtube_fixture("videos_statistics.json"))
+    )
+
+    settings = settings_factory(
+        poll_interval_seconds=_HUGE_POLL_INTERVAL, youtube_api_key="test-youtube-key"
+    )
+    result = collect_module.run_collection(settings, sleep_fn=lambda s: None)
+
+    # 2 Reddit posts + 2 YouTube videos, each collected in both the top and recent pass.
+    assert result.snapshots_written == 8
+
+    conn = get_connection(settings.database_path)
+    platforms = {
+        row[0] for row in conn.execute("SELECT DISTINCT platform FROM snapshots").fetchall()
+    }
+    conn.close()
+    assert platforms == {"reddit", "youtube"}

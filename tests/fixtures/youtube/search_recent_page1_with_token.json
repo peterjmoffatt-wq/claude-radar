@@ -1,0 +1,14 @@
+{
+  "items": [
+    {
+      "id": {"videoId": "vid1"},
+      "snippet": {
+        "title": "Claude API is down again",
+        "description": "Getting 529 errors nonstop during peak hours.",
+        "channelTitle": "TechChannel",
+        "publishedAt": "2023-11-01T12:00:00Z"
+      }
+    }
+  ],
+  "nextPageToken": "PAGE2TOKEN"
+}

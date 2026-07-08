@@ -9,6 +9,7 @@ from pydantic import model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 DEFAULT_SEARCH_TERMS_PATH = Path("config/search_terms.yaml")
+DEFAULT_KNOWN_INCIDENTS_PATH = Path("config/known_incidents.yaml")
 
 
 class Settings(BaseSettings):
@@ -42,8 +43,21 @@ class Settings(BaseSettings):
     classifier_model: str = "claude-haiku-4-5-20251001"
     classify_batch_limit: int = 100
 
+    # YouTube (Data API v3, simple API-key auth)
+    youtube_api_key: str = ""
+
+    # X/Twitter (feature-flagged, off by default -- see radar/sources/x.py)
+    enable_x_source: bool = False
+    x_bearer_token: str = ""
+
     def has_reddit_credentials(self) -> bool:
         return bool(self.reddit_client_id and self.reddit_client_secret)
+
+    def has_youtube_credentials(self) -> bool:
+        return bool(self.youtube_api_key)
+
+    def has_x_credentials(self) -> bool:
+        return self.enable_x_source and bool(self.x_bearer_token)
 
     @model_validator(mode="after")
     def _pepper_required_if_hashing(self) -> "Settings":
@@ -61,3 +75,9 @@ def load_search_terms(path: Path = DEFAULT_SEARCH_TERMS_PATH) -> dict[str, Any]:
     with open(path, encoding="utf-8") as f:
         data = yaml.safe_load(f)
     return data or {}
+
+
+def load_known_incidents(path: Path = DEFAULT_KNOWN_INCIDENTS_PATH) -> list[dict[str, Any]]:
+    with open(path, encoding="utf-8") as f:
+        data = yaml.safe_load(f)
+    return (data or {}).get("incidents", [])

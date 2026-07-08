@@ -1,0 +1,6 @@
+{
+  "items": [
+    {"id": "vid1", "statistics": {"viewCount": "5000", "likeCount": "300", "commentCount": "120"}},
+    {"id": "vid2", "statistics": {"viewCount": "1200", "likeCount": "80", "commentCount": "15"}}
+  ]
+}

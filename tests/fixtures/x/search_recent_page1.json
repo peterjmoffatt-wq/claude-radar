@@ -1,0 +1,19 @@
+{
+  "data": [
+    {
+      "id": "1001",
+      "text": "Claude API rate limits are brutal today",
+      "author_id": "555",
+      "created_at": "2023-11-01T12:00:00.000Z",
+      "public_metrics": {"retweet_count": 10, "reply_count": 5, "like_count": 40, "quote_count": 2}
+    },
+    {
+      "id": "1002",
+      "text": "Anyone else getting 529 from claude?",
+      "author_id": "556",
+      "created_at": "2023-11-02T08:30:00.000Z",
+      "public_metrics": {"retweet_count": 3, "reply_count": 1, "like_count": 15, "quote_count": 0}
+    }
+  ],
+  "meta": {"result_count": 2}
+}

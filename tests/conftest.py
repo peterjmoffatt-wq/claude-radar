@@ -32,6 +32,26 @@ def load_anthropic_fixture():
 
 
 @pytest.fixture
+def load_youtube_fixture():
+    def _load(name: str) -> dict:
+        path = FIXTURES_DIR / "youtube" / name
+        with open(path, encoding="utf-8") as f:
+            return json.load(f)
+
+    return _load
+
+
+@pytest.fixture
+def load_x_fixture():
+    def _load(name: str) -> dict:
+        path = FIXTURES_DIR / "x" / name
+        with open(path, encoding="utf-8") as f:
+            return json.load(f)
+
+    return _load
+
+
+@pytest.fixture
 def settings_factory(tmp_path):
     def _make(**overrides) -> Settings:
         defaults = dict(

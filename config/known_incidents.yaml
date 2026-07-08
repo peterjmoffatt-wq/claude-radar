@@ -1,0 +1,8 @@
+# Known past incidents to backtest the pipeline against (`radar backtest`).
+# This ships with only a placeholder -- replace it with real incident windows once you
+# have weeks of `radar collect` + `radar score` history covering an actual known incident.
+# starts_at / ends_at are ISO 8601 UTC timestamps bounding when the incident was happening.
+incidents:
+  - name: "PLACEHOLDER -- replace with a real known incident"
+    starts_at: "2024-01-01T00:00:00Z"
+    ends_at: "2024-01-01T06:00:00Z"

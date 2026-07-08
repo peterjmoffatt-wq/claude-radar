@@ -3,7 +3,7 @@ from __future__ import annotations
 import pytest
 from pydantic import ValidationError
 
-from radar.config import Settings, load_search_terms
+from radar.config import Settings, load_known_incidents, load_search_terms
 
 
 def test_settings_defaults_applied_when_unset():
@@ -50,3 +50,21 @@ def test_load_search_terms_parses_yaml(tmp_path):
     data = load_search_terms(path=yaml_path)
     assert data["subreddits"] == ["TestSub"]
     assert data["terms"] == ["test term"]
+
+
+def test_load_known_incidents_parses_yaml(tmp_path):
+    yaml_path = tmp_path / "known_incidents.yaml"
+    yaml_path.write_text(
+        'incidents:\n  - name: "Test incident"\n    starts_at: "2024-01-01T00:00:00Z"\n'
+        '    ends_at: "2024-01-01T06:00:00Z"\n'
+    )
+    incidents = load_known_incidents(path=yaml_path)
+    assert incidents == [
+        {"name": "Test incident", "starts_at": "2024-01-01T00:00:00Z", "ends_at": "2024-01-01T06:00:00Z"}
+    ]
+
+
+def test_load_known_incidents_empty_file_returns_empty_list(tmp_path):
+    yaml_path = tmp_path / "known_incidents.yaml"
+    yaml_path.write_text("")
+    assert load_known_incidents(path=yaml_path) == []
