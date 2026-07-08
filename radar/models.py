@@ -60,12 +60,15 @@ class Severity(str, Enum):
     HIGH = "high"
 
 
+ISSUE_SUMMARY_MAX_LENGTH = 120
+
+
 class Classification(BaseModel):
-    """Data contract the Phase 2 classifier targets. No DB table yet."""
+    """Written to the `classifications` table by radar/classify.py."""
 
     post_id: str
     is_pain_point: bool
     category: PainCategory
     model_implicated: ModelImplicated
     severity: Severity
-    issue_summary: str = Field(..., max_length=120)
+    issue_summary: str = Field(..., max_length=ISSUE_SUMMARY_MAX_LENGTH)

@@ -10,6 +10,7 @@ from radar.classify import (
     ClassifierCredentialsMissingError,
     ClaudeClassifier,
 )
+from radar.models import ISSUE_SUMMARY_MAX_LENGTH
 
 
 def make_classifier(settings_factory, sleep_fn=None, **overrides):
@@ -128,6 +129,24 @@ def test_retries_exhausted_raises(settings_factory):
         classifier.classify(post_id="t3_top1", platform="reddit", text="hello", url="https://x")
 
     assert route.call_count > 1
+
+
+@respx.mock
+def test_overlong_issue_summary_is_truncated_not_rejected(settings_factory, load_anthropic_fixture):
+    # A too-long issue_summary used to raise ClassifierAPIError -- discarding an
+    # otherwise-valid classification, and since a failed post never gets a
+    # classifications row, it would retry (and get billed) forever. Truncating
+    # keeps the classification and stops the retry loop.
+    respx.post(API_URL).mock(
+        return_value=httpx.Response(200, json=load_anthropic_fixture("classify_summary_too_long.json"))
+    )
+
+    classifier = make_classifier(settings_factory)
+    result = classifier.classify(post_id="t3_top1", platform="reddit", text="hello", url="https://x")
+
+    assert len(result.issue_summary) <= ISSUE_SUMMARY_MAX_LENGTH
+    assert result.issue_summary.endswith("...")
+    assert result.is_pain_point is True
 
 
 @respx.mock

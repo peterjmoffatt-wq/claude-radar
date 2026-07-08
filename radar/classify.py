@@ -12,7 +12,7 @@ from pydantic import ValidationError
 from radar.config import Settings, get_settings
 from radar.db import get_connection, get_unclassified_posts, init_db, write_classifications
 from radar.http_utils import RateLimitedClient
-from radar.models import Classification, ModelImplicated, PainCategory, Severity
+from radar.models import Classification, ISSUE_SUMMARY_MAX_LENGTH, ModelImplicated, PainCategory, Severity
 
 logger = logging.getLogger("radar.classify")
 
@@ -79,6 +79,12 @@ class ClassifierAPIError(RuntimeError):
     """Raised when a Claude API request fails, or returns an unusable response."""
 
 
+def _truncate(summary: str) -> str:
+    if len(summary) <= ISSUE_SUMMARY_MAX_LENGTH:
+        return summary
+    return summary[: ISSUE_SUMMARY_MAX_LENGTH - 3] + "..."
+
+
 def _build_prompt(platform: str, text: str, url: str) -> str:
     truncated = text[:MAX_TEXT_CHARS]
     return (
@@ -137,6 +143,12 @@ class ClaudeClassifier:
 
         data = response.json()
         tool_input = self._extract_tool_input(data, post_id)
+        if "issue_summary" in tool_input:
+            # The model's own maxLength hint isn't a hard guarantee -- truncate
+            # rather than discard an otherwise-valid classification (and rather
+            # than let it fail forever on every future run, since a failed post
+            # never gets a classifications row to mark it done).
+            tool_input["issue_summary"] = _truncate(tool_input["issue_summary"])
 
         try:
             return Classification(post_id=post_id, **tool_input)
