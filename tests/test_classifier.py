@@ -128,3 +128,17 @@ def test_retries_exhausted_raises(settings_factory):
         classifier.classify(post_id="t3_top1", platform="reddit", text="hello", url="https://x")
 
     assert route.call_count > 1
+
+
+@respx.mock
+def test_network_timeout_raises_classifier_api_error_not_raw_httpx_error(settings_factory):
+    # A transport-level failure (timeout, connection error, ...) must be converted
+    # to ClassifierAPIError too, not just HTTP error statuses -- otherwise it
+    # escapes the per-post try/except in run_classification and crashes the whole
+    # batch instead of being logged and skipped.
+    respx.post(API_URL).mock(side_effect=httpx.ReadTimeout("timed out"))
+
+    classifier = make_classifier(settings_factory)
+
+    with pytest.raises(ClassifierAPIError):
+        classifier.classify(post_id="t3_top1", platform="reddit", text="hello", url="https://x")

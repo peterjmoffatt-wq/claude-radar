@@ -100,7 +100,9 @@ class ClaudeClassifier:
         sleep_fn: Callable[[float], None] = time.sleep,
     ) -> None:
         self._settings = settings
-        self._client = client or httpx.Client()
+        # httpx's default timeout (5s per phase) is too short for a real Claude
+        # completion -- a forced tool-use call can legitimately take longer than that.
+        self._client = client or httpx.Client(timeout=60.0)
         self._rate_limited = RateLimitedClient(self._client, sleep_fn=sleep_fn)
 
     def classify(self, post_id: str, platform: str, text: str, url: str) -> Classification:
@@ -127,7 +129,10 @@ class ClaudeClassifier:
                 },
             )
             response.raise_for_status()
-        except httpx.HTTPStatusError as exc:
+        except httpx.HTTPError as exc:
+            # Covers both HTTP error statuses and transport-level failures (timeouts,
+            # connection errors) -- either way it's a per-post failure the caller
+            # should log and skip, not one that should crash the whole batch.
             raise ClassifierAPIError(f"Claude classify request failed: {exc}") from exc
 
         data = response.json()
