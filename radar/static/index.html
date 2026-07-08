@@ -10,22 +10,41 @@
 <header>
   <h1>Claude Radar</h1>
   <p>Public-signal early-warning dashboard for Claude / the Claude API.</p>
+  <nav class="tabs" role="tablist" aria-label="Dashboard sections">
+    <button type="button" class="tab-button is-active" role="tab" aria-selected="true" aria-controls="tab-overview" data-tab="overview">Overview</button>
+    <button type="button" class="tab-button" role="tab" aria-selected="false" aria-controls="tab-footprint" data-tab="footprint">Footprint</button>
+    <button type="button" class="tab-button" role="tab" aria-selected="false" aria-controls="tab-alerts" data-tab="alerts">Alerts</button>
+  </nav>
 </header>
 
 <main>
-  <section class="overview">
-    <div class="card">
-      <h2>Root-cause clusters</h2>
-      <div id="clusters-chart"><p class="empty-state">Loading…</p></div>
-    </div>
-    <div class="card">
-      <h2>Lead time (early-warning vs. top pass)</h2>
-      <div id="leadtime-stat"><p class="empty-state">Loading…</p></div>
+  <section id="tab-overview" class="tab-panel" role="tabpanel" data-tab="overview">
+    <div class="overview">
+      <div class="card">
+        <h2>Root-cause clusters</h2>
+        <div id="clusters-chart"><p class="empty-state">Loading…</p></div>
+      </div>
+      <div class="card">
+        <h2>Lead time (early-warning vs. top pass)</h2>
+        <div id="leadtime-stat"><p class="empty-state">Loading…</p></div>
+      </div>
     </div>
   </section>
 
-  <section>
-    <h2>Alerts</h2>
+  <section id="tab-footprint" class="tab-panel" role="tabpanel" data-tab="footprint" hidden>
+    <div class="card footprint-card">
+      <h2>Cross-platform footprint</h2>
+      <div id="footprint-graph"><p class="empty-state">Loading…</p></div>
+      <div id="footprint-legend" class="footprint-legend"></div>
+      <p class="footprint-caption">
+        Each hub is a root-cause cluster; each satellite is a post, colored by platform and
+        sized by velocity. A hub with satellites in more than one color is the same issue
+        showing up on more than one platform -- a bigger footprint than its size alone suggests.
+      </p>
+    </div>
+  </section>
+
+  <section id="tab-alerts" class="tab-panel" role="tabpanel" data-tab="alerts" hidden>
     <div class="filters">
       <label>Status
         <select id="filter-status">
@@ -59,23 +78,25 @@
       </label>
     </div>
 
-    <table>
-      <thead>
-        <tr>
-          <th>Platform</th>
-          <th>Category</th>
-          <th>Severity</th>
-          <th class="num">Velocity</th>
-          <th>QA status</th>
-          <th>Summary</th>
-          <th>Post</th>
-          <th>Actions</th>
-        </tr>
-      </thead>
-      <tbody id="alerts-body">
-        <tr><td colspan="8" class="empty-state">Loading…</td></tr>
-      </tbody>
-    </table>
+    <div class="card">
+      <table>
+        <thead>
+          <tr>
+            <th>Platform</th>
+            <th>Category</th>
+            <th>Severity</th>
+            <th class="num">Velocity</th>
+            <th>QA status</th>
+            <th>Summary</th>
+            <th>Post</th>
+            <th>Actions</th>
+          </tr>
+        </thead>
+        <tbody id="alerts-body">
+          <tr><td colspan="8" class="empty-state">Loading…</td></tr>
+        </tbody>
+      </table>
+    </div>
   </section>
 </main>
 

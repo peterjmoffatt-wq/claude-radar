@@ -11,6 +11,11 @@
   --status-good: #0ca30c;
   --status-warning: #fab219;
   --status-critical: #d03b3b;
+  /* Platform identity colors -- categorical slots 1/2/3, validated --pairs all
+     (this view can place any two platforms' bubbles adjacent to each other). */
+  --platform-reddit: #2a78d6;
+  --platform-youtube: #1baf7a;
+  --platform-x: #eda100;
 }
 
 @media (prefers-color-scheme: dark) {
@@ -24,6 +29,9 @@
     --baseline: #383835;
     --border: rgba(255, 255, 255, 0.10);
     --series-1: #3987e5;
+    --platform-reddit: #3987e5;
+    --platform-youtube: #199e70;
+    --platform-x: #c98500;
   }
 }
 
@@ -39,7 +47,9 @@ body {
 }
 
 header {
-  padding: 24px 32px 8px;
+  padding: 24px 32px 0;
+  background: var(--surface-1);
+  border-bottom: 1px solid var(--border);
 }
 
 header h1 {
@@ -48,17 +58,50 @@ header h1 {
 }
 
 header p {
-  margin: 0;
+  margin: 0 0 18px;
   color: var(--text-secondary);
   font-size: 14px;
 }
 
+/* -- tabs -- */
+
+.tabs {
+  display: flex;
+  gap: 4px;
+}
+
+.tab-button {
+  font: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  padding: 10px 4px;
+  margin-right: 20px;
+  border: none;
+  border-bottom: 2px solid transparent;
+  background: none;
+  color: var(--text-secondary);
+  cursor: pointer;
+}
+
+.tab-button:hover {
+  color: var(--text-primary);
+}
+
+.tab-button.is-active {
+  color: var(--series-1);
+  border-bottom-color: var(--series-1);
+}
+
 main {
-  padding: 16px 32px 48px;
+  padding: 24px 32px 48px;
   display: flex;
   flex-direction: column;
   gap: 24px;
   max-width: 1100px;
+}
+
+.tab-panel[hidden] {
+  display: none;
 }
 
 .overview {
@@ -169,6 +212,72 @@ main {
   stroke-width: 2;
   stroke-linejoin: round;
   stroke-linecap: round;
+}
+
+/* -- footprint graph -- */
+
+.footprint-card svg {
+  display: block;
+  width: 100%;
+  height: 420px;
+  background: var(--surface-1);
+}
+
+.footprint-legend {
+  display: flex;
+  gap: 16px;
+  flex-wrap: wrap;
+  margin-top: 10px;
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+.footprint-legend .legend-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.footprint-legend .legend-swatch {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  flex: none;
+}
+
+.footprint-caption {
+  font-size: 12px;
+  color: var(--text-muted);
+  margin: 10px 0 0;
+}
+
+.graph-edge {
+  stroke: var(--gridline);
+  stroke-width: 1;
+  fill: none;
+}
+
+.graph-hub circle.hub-fill {
+  fill: var(--text-muted);
+  opacity: 0.35;
+  stroke: var(--surface-1);
+  stroke-width: 2;
+}
+
+.graph-hub text {
+  fill: var(--text-secondary);
+  font-size: 10px;
+}
+
+.graph-node circle.node-fill {
+  stroke: var(--surface-1);
+  stroke-width: 2;
+}
+
+.graph-hub .hit-area,
+.graph-node .hit-area {
+  fill: transparent;
+  cursor: default;
 }
 
 /* -- filters -- */
