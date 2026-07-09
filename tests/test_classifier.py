@@ -58,6 +58,30 @@ def test_classify_maps_fixture_to_non_pain_point(settings_factory, load_anthropi
 
 
 @respx.mock
+def test_advertisement_coerces_is_pain_point_false_even_if_model_says_true(
+    settings_factory, load_anthropic_fixture
+):
+    # The fixture deliberately sets is_pain_point=true alongside
+    # is_advertisement=true -- an inconsistent model response -- to prove the
+    # coercion in ClaudeClassifier.classify() enforces the invariant itself
+    # rather than trusting the model to set both fields consistently.
+    respx.post(API_URL).mock(
+        return_value=httpx.Response(200, json=load_anthropic_fixture("classify_advertisement.json"))
+    )
+
+    classifier = make_classifier(settings_factory)
+    result = classifier.classify(
+        post_id="t3_ads1",
+        platform="reddit",
+        text="You burned your token usage! Get free access with Perplexity.",
+        url="https://www.reddit.com/r/ClaudeAI/comments/ads1/",
+    )
+
+    assert result.is_advertisement is True
+    assert result.is_pain_point is False
+
+
+@respx.mock
 def test_sends_expected_headers_and_forced_tool_choice(settings_factory, load_anthropic_fixture):
     route = respx.post(API_URL).mock(
         return_value=httpx.Response(200, json=load_anthropic_fixture("classify_pain_point.json"))

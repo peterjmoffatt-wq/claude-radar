@@ -133,7 +133,7 @@ class YouTubeSource:
         try:
             response = self._rate_limited.request("GET", url, params=params)
             response.raise_for_status()
-        except httpx.HTTPStatusError as exc:
+        except httpx.HTTPError as exc:
             raise YouTubeAPIError(f"YouTube API request failed: {exc}") from exc
         return response.json()
 

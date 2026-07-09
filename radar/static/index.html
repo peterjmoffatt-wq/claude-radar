@@ -7,19 +7,52 @@
 <link rel="stylesheet" href="/dashboard.css" />
 </head>
 <body>
-<header>
+<div class="app-shell">
+<aside class="sidebar">
   <h1>Claude Radar</h1>
   <p>Public-signal early-warning dashboard for Claude / the Claude API.</p>
   <nav class="tabs" role="tablist" aria-label="Dashboard sections">
-    <button type="button" class="tab-button is-active" role="tab" aria-selected="true" aria-controls="tab-overview" data-tab="overview">Overview</button>
-    <button type="button" class="tab-button" role="tab" aria-selected="false" aria-controls="tab-footprint" data-tab="footprint">Footprint</button>
+    <button type="button" class="tab-button is-active" role="tab" aria-selected="true" aria-controls="tab-overview" data-tab="overview">Home</button>
     <button type="button" class="tab-button" role="tab" aria-selected="false" aria-controls="tab-watching" data-tab="watching">Watching</button>
     <button type="button" class="tab-button" role="tab" aria-selected="false" aria-controls="tab-alerts" data-tab="alerts">Alerts</button>
+    <button type="button" class="tab-button" role="tab" aria-selected="false" aria-controls="tab-settings" data-tab="settings">Settings</button>
   </nav>
-</header>
+</aside>
 
 <main>
   <section id="tab-overview" class="tab-panel" role="tabpanel" data-tab="overview">
+    <div class="card footprint-card">
+      <h2>Cross-platform footprint</h2>
+      <div class="footprint-filters">
+        <div id="footprint-platform-filter" class="footprint-filter-group"></div>
+        <div id="footprint-category-filter" class="footprint-filter-group"></div>
+      </div>
+      <div class="footprint-layout">
+        <div id="footprint-graph"><p class="empty-state">Loading…</p></div>
+        <div id="footprint-detail" class="footprint-detail">
+          <p class="empty-state">Click a node for details. Drag any node to reposition it.</p>
+        </div>
+      </div>
+      <div id="footprint-legend" class="footprint-legend"></div>
+      <p class="footprint-caption">
+        Each hub is a root-cause cluster; each satellite is a post, colored by platform. Only 4
+        hues are safely distinguishable and clear of the red/orange/green already used for risk
+        rings and status, so Reddit/YouTube share a hue (circle/diamond) and Hacker News/X share
+        another -- shape, not color, tells those two pairs apart (Mastodon is a square). Solid
+        satellites are
+        scored alerts, sized by velocity; hollow satellites are classified pain points that
+        haven't crossed the velocity threshold (or don't have enough snapshot history) yet. A hub
+        with satellites in more than one color -- alerted or not -- is the same issue showing up
+        on more than one platform, a bigger footprint than any single post's size or status
+        suggests. An orange ring means a post has crossed into med-severity ("danger") territory;
+        a red ring means high severity ("full risk") -- independent of platform color, and absent
+        entirely for low severity so a calm post stays uncluttered. Drag any node to reposition
+        it; click for a persistent detail card instead of a hover tooltip; uncheck a platform or
+        category above to hide it (double-click one to isolate it). The legend below is a color
+        key only -- filtering lives above the graph, not split across both ends of it.
+      </p>
+    </div>
+
     <div class="overview">
       <div class="card">
         <h2>Root-cause clusters</h2>
@@ -29,22 +62,15 @@
         <h2>Lead time (early-warning vs. top pass)</h2>
         <div id="leadtime-stat"><p class="empty-state">Loading…</p></div>
       </div>
-    </div>
-  </section>
-
-  <section id="tab-footprint" class="tab-panel" role="tabpanel" data-tab="footprint" hidden>
-    <div class="card footprint-card">
-      <h2>Cross-platform footprint</h2>
-      <div id="footprint-graph"><p class="empty-state">Loading…</p></div>
-      <div id="footprint-legend" class="footprint-legend"></div>
-      <p class="footprint-caption">
-        Each hub is a root-cause cluster; each satellite is a post, colored by platform.
-        Solid satellites are scored alerts, sized by velocity; hollow satellites are classified
-        pain points that haven't crossed the velocity threshold (or don't have enough snapshot
-        history) yet. A hub with satellites in more than one color -- alerted or not -- is the
-        same issue showing up on more than one platform, a bigger footprint than any single
-        post's size or status suggests.
-      </p>
+      <div class="card">
+        <h2>Spam/ads filtered</h2>
+        <p class="source-picker-caption">
+          Promotional or competitor-poaching posts that borrow Claude pain-point language on
+          purpose (e.g. "you burned your token usage, get free access with a competitor") --
+          caught and excluded from Watching/Alerts, not just silently dropped.
+        </p>
+        <div id="ads-stat"><p class="empty-state">Loading…</p></div>
+      </div>
     </div>
   </section>
 
@@ -55,19 +81,60 @@
       so far, so there's no rate to compute. Real signal that exists but isn't "alerting."
     </p>
     <p id="watching-count" class="stat-label"></p>
+
+    <div class="filters">
+      <label>Platform
+        <select id="filter-watching-platform">
+          <option value="">All</option>
+          <option value="reddit">Reddit</option>
+          <option value="youtube">YouTube</option>
+          <option value="hackernews">Hacker News</option>
+          <option value="stackoverflow">Stack Overflow</option>
+          <option value="github">GitHub</option>
+          <option value="x">X</option>
+          <option value="mastodon">Mastodon</option>
+        </select>
+      </label>
+      <label>Category
+        <select id="filter-watching-category">
+          <option value="">All</option>
+          <option value="api_abuse">API abuse</option>
+          <option value="product_bug">Product bug</option>
+          <option value="ux_confusion">UX confusion</option>
+          <option value="messaging_gap">Messaging gap</option>
+          <option value="credential_theft">Credential theft</option>
+          <option value="abuse">Abuse</option>
+          <option value="safety">Safety</option>
+          <option value="other">Other</option>
+        </select>
+      </label>
+      <label>Severity
+        <select id="filter-watching-severity">
+          <option value="">All</option>
+          <option value="high">High</option>
+          <option value="med">Med</option>
+          <option value="low">Low</option>
+        </select>
+      </label>
+    </div>
+
     <div class="card">
       <table>
         <thead>
           <tr>
-            <th>Platform</th>
-            <th>Category</th>
-            <th>Severity</th>
+            <th class="sortable-th" data-sort-key="platform">Platform</th>
+            <th>Matched term</th>
+            <th class="sortable-th" data-sort-key="category">Category</th>
+            <th class="sortable-th" data-sort-key="severity">Severity</th>
             <th>Summary</th>
+            <th>Poster</th>
+            <th>Posted</th>
+            <th>Engagement</th>
             <th>Post</th>
           </tr>
         </thead>
         <tbody id="watching-body">
-          <tr><td colspan="5" class="empty-state">Loading…</td></tr>
+          <tr><td colspan="9" class="empty-state">Loading…</td></tr>
         </tbody>
       </table>
     </div>
@@ -105,29 +172,102 @@
           <option value="low">Low</option>
         </select>
       </label>
+      <label>Platform
+        <select id="filter-alerts-platform">
+          <option value="">All</option>
+          <option value="reddit">Reddit</option>
+          <option value="youtube">YouTube</option>
+          <option value="hackernews">Hacker News</option>
+          <option value="stackoverflow">Stack Overflow</option>
+          <option value="github">GitHub</option>
+          <option value="x">X</option>
+          <option value="mastodon">Mastodon</option>
+        </select>
+      </label>
     </div>
 
     <div class="card">
       <table>
         <thead>
           <tr>
-            <th>Platform</th>
-            <th>Category</th>
-            <th>Severity</th>
-            <th class="num">Velocity</th>
+            <th class="sortable-th" data-sort-key="platform">Platform</th>
+            <th>Matched term</th>
+            <th class="sortable-th" data-sort-key="category">Category</th>
+            <th class="sortable-th" data-sort-key="severity">Severity</th>
+            <th class="num sortable-th" data-sort-key="velocity">Velocity</th>
             <th>QA status</th>
             <th>Summary</th>
+            <th>Poster</th>
+            <th>Posted</th>
+            <th>Engagement</th>
             <th>Post</th>
             <th>Actions</th>
           </tr>
         </thead>
         <tbody id="alerts-body">
-          <tr><td colspan="8" class="empty-state">Loading…</td></tr>
+          <tr><td colspan="12" class="empty-state">Loading…</td></tr>
         </tbody>
       </table>
     </div>
   </section>
+
+  <section id="tab-settings" class="tab-panel" role="tabpanel" data-tab="settings" hidden>
+    <div class="card source-picker">
+      <h2>Sources</h2>
+      <p class="source-picker-caption">
+        Choose which platforms to search, then run a live collection pass. Platforms without
+        credentials configured in <code>.env</code> are skipped, not failed. In production this
+        runs on a schedule (e.g. a cron/systemd timer calling <code>radar collect</code>) rather
+        than a manual click -- this button is the same operation, triggered on demand.
+      </p>
+      <div id="source-checkboxes" class="source-checkboxes"><p class="empty-state">Loading…</p></div>
+      <div class="source-picker-actions">
+        <button type="button" id="run-collection-btn" class="run-collection">Run collection</button>
+        <span id="collection-status" class="collection-status" role="status"></span>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>Search terms</h2>
+      <p class="source-picker-caption">Generic watchlist terms, searched across every configured source.</p>
+      <div id="terms-chip-list"></div>
+    </div>
+
+    <div class="card">
+      <h2>Watched clients</h2>
+      <p class="source-picker-caption">
+        Enterprise/client names whose Claude-powered products you want watched for targeted
+        attacks -- each one gets automatically crossed with every risk pattern below, so you
+        don't have to type every combination by hand (e.g. a "McDonald's"-style AI chatbot
+        incident: prompt injection leading to credential/token theft).
+      </p>
+      <div id="clients-chip-list"></div>
+    </div>
+
+    <div class="card">
+      <h2>Risk patterns</h2>
+      <p class="source-picker-caption">
+        Attack-pattern phrases crossed with each watched client above. Edit this list to tune
+        what "targeted" means for your threat model.
+      </p>
+      <div id="risk-patterns-chip-list"></div>
+    </div>
+
+    <div class="card">
+      <div class="settings-save-row">
+        <button type="button" id="save-watchlist-btn">Save watchlist</button>
+        <span id="watchlist-status" class="collection-status" role="status"></span>
+      </div>
+      <h2>Effective query preview</h2>
+      <p class="source-picker-caption">
+        What a collection run will actually search -- generic terms plus every client × risk
+        pattern combination. Updates live as you edit above, before you save.
+      </p>
+      <div id="effective-terms-preview" class="effective-terms-preview"></div>
+    </div>
+  </section>
 </main>
+</div>
 
 <div id="chart-tooltip" role="tooltip"></div>
 

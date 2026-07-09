@@ -41,7 +41,7 @@ class RateLimitedClient:
                 attempt += 1
                 if attempt > self._max_retries:
                     response.raise_for_status()
-                self._sleep_fn(self._backoff_delay(attempt))
+                self._sleep_fn(self._retry_delay(response, attempt))
                 continue
 
             self._respect_rate_limit_headers(response)
@@ -54,6 +54,18 @@ class RateLimitedClient:
         remaining = self._min_interval - elapsed
         if remaining > 0:
             self._sleep_fn(remaining)
+
+    def _retry_delay(self, response: httpx.Response, attempt: int) -> float:
+        # Prefer the server's own Retry-After (integer-seconds form -- GitHub's
+        # secondary rate limit and Reddit both send it) over blind exponential
+        # backoff; an HTTP-date value or anything unparseable falls back to it.
+        retry_after = response.headers.get("retry-after")
+        if retry_after is not None:
+            try:
+                return max(0.0, float(retry_after))
+            except ValueError:
+                pass
+        return self._backoff_delay(attempt)
 
     def _backoff_delay(self, attempt: int) -> float:
         delay = min(self._backoff_cap, self._backoff_base * (2 ** (attempt - 1)))

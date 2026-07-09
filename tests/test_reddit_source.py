@@ -59,6 +59,51 @@ def test_search_top_maps_fixture_to_rawpost(settings_factory, load_reddit_fixtur
 
 
 @respx.mock
+def test_num_crossposts_maps_to_shares(settings_factory, load_reddit_fixture):
+    fixture = load_reddit_fixture("search_top_page1.json")
+    fixture["data"]["children"][0]["data"]["num_crossposts"] = 6
+    mock_token_route(load_reddit_fixture)
+    respx.get(f"{API_BASE}/r/ClaudeAI/search").mock(return_value=httpx.Response(200, json=fixture))
+
+    source = make_source(settings_factory)
+    posts = source.search_top("claude api", window="week", limit=50)
+
+    assert posts[0].metrics.shares == 6
+
+
+@respx.mock
+def test_search_top_default_scopes_to_subreddits_with_restrict_sr(settings_factory, load_reddit_fixture):
+    mock_token_route(load_reddit_fixture)
+    route = respx.get(f"{API_BASE}/r/ClaudeAI/search").mock(
+        return_value=httpx.Response(200, json=load_reddit_fixture("search_top_page1.json"))
+    )
+
+    source = make_source(settings_factory)
+    source.search_top("claude api", window="week", limit=50)
+
+    assert route.called
+    assert route.calls.last.request.url.params["restrict_sr"] == "true"
+
+
+@respx.mock
+def test_search_top_site_wide_hits_global_search_without_restrict_sr(settings_factory, load_reddit_fixture):
+    mock_token_route(load_reddit_fixture)
+    subreddit_route = respx.get(f"{API_BASE}/r/ClaudeAI/search").mock(
+        return_value=httpx.Response(200, json=load_reddit_fixture("search_top_page1.json"))
+    )
+    site_wide_route = respx.get(f"{API_BASE}/search").mock(
+        return_value=httpx.Response(200, json=load_reddit_fixture("search_top_page1.json"))
+    )
+
+    source = make_source(settings_factory)
+    source.search_top("McDonald's jailbreak", window="week", limit=50, site_wide=True)
+
+    assert not subreddit_route.called
+    assert site_wide_route.called
+    assert "restrict_sr" not in site_wide_route.calls.last.request.url.params
+
+
+@respx.mock
 def test_search_recent_stops_paginating_when_page_crosses_since(settings_factory, load_reddit_fixture):
     mock_token_route(load_reddit_fixture)
     route = respx.get(f"{API_BASE}/r/ClaudeAI/search").mock(
@@ -151,6 +196,31 @@ def test_retries_exhausted_raises(settings_factory, load_reddit_fixture):
         source.search_top("claude api", window="week", limit=50)
 
     assert route.call_count > 1
+
+
+@respx.mock
+def test_connection_timeout_raises_reddit_api_error_not_raw_httpx_error(settings_factory, load_reddit_fixture):
+    # A transport-level failure (timeout, connection error, ...) must convert to
+    # RedditAPIError the same way an HTTP error status does -- previously this
+    # only caught httpx.HTTPStatusError, so a timeout would escape as a raw
+    # httpx exception instead of the source's own error type.
+    mock_token_route(load_reddit_fixture)
+    respx.get(f"{API_BASE}/r/ClaudeAI/search").mock(side_effect=httpx.ConnectTimeout("timed out"))
+
+    source = make_source(settings_factory)
+
+    with pytest.raises(RedditAPIError):
+        source.search_top("claude api", window="week", limit=50)
+
+
+@respx.mock
+def test_access_token_request_timeout_raises_reddit_api_error(settings_factory):
+    respx.post(TOKEN_URL).mock(side_effect=httpx.ConnectTimeout("timed out"))
+
+    source = make_source(settings_factory)
+
+    with pytest.raises(RedditAPIError):
+        source.search_top("claude api", window="week", limit=50)
 
 
 @respx.mock

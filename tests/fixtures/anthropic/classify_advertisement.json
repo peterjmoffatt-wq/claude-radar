@@ -1,0 +1,24 @@
+{
+  "id": "msg_01ADS456",
+  "type": "message",
+  "role": "assistant",
+  "model": "claude-haiku-4-5-20251001",
+  "content": [
+    {
+      "type": "tool_use",
+      "id": "toolu_01ADS789",
+      "name": "record_classification",
+      "input": {
+        "is_pain_point": true,
+        "is_advertisement": true,
+        "category": "other",
+        "model_implicated": "claude_api_general",
+        "severity": "low",
+        "issue_summary": "Post claims you burned your token usage and offers free access with Perplexity instead."
+      }
+    }
+  ],
+  "stop_reason": "tool_use",
+  "stop_sequence": null,
+  "usage": {"input_tokens": 195, "output_tokens": 61}
+}

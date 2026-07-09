@@ -6,14 +6,17 @@ sensitive categories behind human review, clusters them by root cause, and surfa
 important clusters on a dashboard with a lead-time metric — how early we spotted an issue
 versus when it went viral. Built as a portfolio/interview prototype.
 
-**Status: Phase 9 of 9 (all phases scaffolded).** Collectors for Reddit, YouTube, Hacker News,
-Stack Overflow, and GitHub Issues write a time series of post snapshots to SQLite; a
+**Status: Phase 9 of 9 (all phases scaffolded), plus a Mastodon source and a dashboard source
+picker/live-collection trigger added afterward.** Collectors for Reddit, YouTube, Hacker News,
+Stack Overflow, GitHub Issues, and Mastodon write a time series of post snapshots to SQLite; a
 Claude-based classifier labels pain points; a scorer turns accelerating pain points into
 alerts; a human QA gate reviews sensitive categories; a clustering step groups alerts by root
-cause; a FastAPI + static dashboard surfaces all of it; a lead-time metric measures how early
-the early-warning pass caught things; and a backtest CLI replays scored alerts against known
-past incidents. An X/Twitter source exists behind a feature flag but ships inert (no free API
-tier — see Phase 9 below). See "How it works" for the full per-phase breakdown.
+cause; a FastAPI + static dashboard surfaces all of it (including an interactive, draggable
+cross-platform footprint graph on the home tab); a lead-time metric measures how early the
+early-warning pass caught things; and a backtest CLI replays scored alerts against known past
+incidents. An X/Twitter source exists behind a feature flag but ships inert (no free API tier
+— see Phase 9 below). See "How it works" for the full per-phase breakdown, and "Platforms not
+included" for what a partner-API-funded version would add next.
 
 ## Guardrails
 
@@ -54,6 +57,8 @@ Then edit `.env`:
   required (300 req/day shared-IP quota); optionally set `STACKOVERFLOW_API_KEY` (below) for
   a higher quota.
 - Fill in `GITHUB_TOKEN` once you have one (below) to collect from GitHub Issues.
+- Fill in `MASTODON_INSTANCE_URL` + `MASTODON_ACCESS_TOKEN` once you have both (below) to
+  collect from Mastodon.
 
 ### Creating a Reddit API app
 
@@ -96,6 +101,42 @@ key (no OAuth flow needed for read-only public search).
    requests/minute, too low to be usable across several search terms — a token (even with no
    scopes) raises this to a workable rate.
 
+### Creating a Mastodon access token
+
+1. Pick a Mastodon instance (e.g. `https://mastodon.social`, or any instance you have an
+   account on) and log in.
+2. Go to **Settings → Development → New Application**. Give it any name; the only scope this
+   project needs is `read:search` (or just `read`, which includes it).
+3. Set `MASTODON_INSTANCE_URL` to the instance's base URL (e.g. `https://mastodon.social`) and
+   `MASTODON_ACCESS_TOKEN` to the application's generated access token.
+4. **This searches one instance's known/federated statuses, not "all of Mastodon"** — there is
+   no global search across the fediverse; each instance only indexes posts it has seen. Pick an
+   instance with broad federation (mastodon.social is a reasonable default) to maximize
+   coverage. Confirmed live before wiring this up: unauthenticated account/hashtag search works
+   on `mastodon.social`, but status (post) search returns an empty result set without a bearer
+   token — that's why this needs a real token, unlike Hacker News or Stack Overflow.
+
+## Platforms not included
+
+The dashboard's source picker also lists Discord, LinkedIn, TikTok, and Threads as disabled
+"Coming soon" checkboxes — deliberately shown, not hidden, as the honest next step of this
+story: none of them expose a public search API accessible without a partner/business
+relationship (Discord has no cross-server public search API at all; LinkedIn, TikTok, and
+Threads gate their APIs behind app review or partnership tiers this project doesn't have).
+Building a fake collector against a scraped or unofficial endpoint for any of them would break
+guardrail #1 above, so they stay as picker entries with no backing code — a real placeholder
+for "what a funded version adds next," not a working feature.
+
+**Bluesky was evaluated and deliberately left out entirely** (not even as "coming soon"). Its
+public, unauthenticated API works fine for profile/account lookups, but the actual
+`app.bsky.feed.searchPosts` endpoint returns `403 Forbidden` without an authenticated session —
+confirmed live before ruling it out. The *only* way to search posts is to authenticate with an
+account handle + a Bluesky "app password" (a scoped secondary credential, not your real
+password, but still logging into a real account to do it). That sits closer to the "no logging
+into anyone's platform" guardrail line than Reddit's app-only `client_credentials` grant or
+Mastodon/GitHub/X's bearer-token model, none of which require *any* account to exist. Rather
+than quietly building something that stretches that guardrail, it's excluded outright.
+
 ## Running the collector
 
 ```bash
@@ -106,15 +147,38 @@ radar collect
 Loads `config/search_terms.yaml` and runs every **configured** source: Reddit
 (`REDDIT_CLIENT_ID`/`SECRET`), YouTube (`YOUTUBE_API_KEY`), Hacker News
 (`ENABLE_HACKERNEWS_SOURCE=true`), Stack Overflow (`ENABLE_STACKOVERFLOW_SOURCE=true`),
-GitHub Issues (`GITHUB_TOKEN`), and X (`ENABLE_X_SOURCE=true` + `X_BEARER_TOKEN`, inert
-without paid access — see Phase 9). Each does a `search_top` (most-engaged) and a
-`search_recent` (newest) pass per term, writing one row per matched post to the `snapshots`
-table in `data/radar.db`. A source with no credentials/flag is skipped with a log line, not a
-hard failure; the whole command only no-ops if *no* source is configured. Re-running it later
-adds new snapshot rows for the same posts — that accumulating time series is what scoring uses
-to compute engagement velocity, and what the lead-time metric reads.
+GitHub Issues (`GITHUB_TOKEN`), Mastodon (`MASTODON_INSTANCE_URL`/`MASTODON_ACCESS_TOKEN`), and
+X (`ENABLE_X_SOURCE=true` + `X_BEARER_TOKEN`, inert without paid access — see Phase 9). Each
+does a `search_top` (most-engaged) and a `search_recent` (newest) pass per term, writing one
+row per matched post to the `snapshots` table in `data/radar.db`. A source with no
+credentials/flag is skipped with a log line, not a hard failure; the whole command only no-ops
+if *no* source is configured. Re-running it later adds new snapshot rows for the same posts —
+that accumulating time series is what scoring uses to compute engagement velocity, and what the
+lead-time metric reads.
 
-Tuning the watchlist: edit `config/search_terms.yaml` (subreddits + search terms) and re-run.
+`run_collection()` also accepts an optional `sources` filter (a subset of configured source
+names) — `radar collect` doesn't use it (always polls everything configured), but the
+dashboard's source picker does, via `POST /api/collect` (see "Serving the dashboard" below).
+
+**Tuning the watchlist**: edit `config/search_terms.yaml` directly, or use the dashboard's
+Settings tab (writes to the same file, so `radar collect` picks up dashboard edits too — see
+below). Two kinds of entries:
+- `terms` — generic watchlist phrases (up to `MAX_WATCHLIST_ITEMS` = 10), searched as-is.
+- `clients` × `risk_patterns` — the **client-scoped targeted-attack detection** layer.
+  `radar/config.py`'s `effective_terms()` crosses every watched client name with every risk
+  pattern into a combined query (e.g. client `"McDonald's"` + pattern `"jailbreak"` →
+  `"McDonald's jailbreak"`), so you can ask "is a specific enterprise client's Claude deployment
+  being targeted" without hand-typing every combination. `risk_patterns` ships with a starting
+  set (jailbreak, prompt injection, credential leak, api key leak, token theft, code execution
+  exploit, system prompt leak, data exfiltration) — edit it to tune what "targeted" means for
+  your threat model. Each list is capped at `MAX_WATCHLIST_ITEMS` independently, but the
+  *effective* query count is `len(terms) + len(clients) * len(risk_patterns)`, which can get
+  large fast — the dashboard's Settings tab shows a live "effective query preview" so you can
+  see the real count before running a collection pass.
+- Every `snapshots` row keeps `matched_term` — which exact term (generic or a client×pattern
+  combo) surfaced that post — surfaced on the Watching/Alerts tables and the footprint graph's
+  detail panel/tooltip, so a hit from `"McDonald's jailbreak"` reads as exactly that, not a
+  generic "Claude" mention.
 
 ## Running the classifier
 
@@ -200,10 +264,51 @@ alert already fired) or a miss, plus an aggregate hit rate.
 radar serve
 ```
 
-Serves a FastAPI backend + static frontend at <http://127.0.0.1:8000> (local only): a
-filterable alerts table (status/category/severity) with inline approve/reject actions, a
-root-cause cluster chart, and the lead-time stat + distribution. Pure HTML/CSS/vanilla JS —
-no build step, no CDN, works fully offline. See `radar/api.py` and `radar/static/`.
+Serves a FastAPI backend + static frontend at <http://127.0.0.1:8000> (local only). Pure
+HTML/CSS/vanilla JS — no build step, no CDN, works fully offline. See `radar/api.py` and
+`radar/static/`.
+
+Navigation is a left sidebar (Home / Watching / Alerts / Settings), not top tabs.
+
+**Home** is the cross-platform footprint graph plus the root-cause cluster chart and lead-time
+stat. Nodes are pointer-draggable (drag to reposition, it stays pinned where you drop it) and
+clicking any node opens a persistent detail panel (platform name, category, severity/velocity,
+matched search term, summary, a real "View post" link) instead of relying on a hover tooltip —
+deliberately so, since the raw `post_id` alone doesn't tell you which platform, issue, or
+matched term you're looking at. **Filtering**: click a platform swatch in the legend to
+hide/show its nodes (and any hub left with zero visible members), or click a category chip
+above the graph to narrow to specific root causes — both read from the full fetched set, so
+toggling is instant and doesn't re-fetch.
+
+**Watching** and **Alerts** are the filterable, sortable tables — Platform/Category/Severity
+filters on both (Alerts also filters by QA status), a Platform filter added to Alerts, and
+click-to-sort column headers (Platform/Category/Severity/Velocity) with a ▲/▼ indicator; Alerts
+keeps its inline approve/reject actions. Both tables show **Matched term** so a client-scoped
+hit (e.g. `"McDonald's jailbreak"`) is visibly distinct from a generic one.
+
+**Settings** holds everything about *what* gets searched, separated from the "what did we
+find" tabs above: the source picker (checkboxes for every real platform, pre-checked from
+`GET /api/sources` if already configured in `.env`, plus disabled "Coming soon" entries for
+Discord/LinkedIn/TikTok/Threads — see "Platforms not included") with a **Run collection**
+button that `POST`s to `/api/collect` and triggers a real, live collection pass for just the
+checked sources; three editable watchlists (Search terms, Watched clients, Risk patterns —
+see "Tuning the watchlist" above) with a live "effective query preview" and a single **Save
+watchlist** button that writes to `config/search_terms.yaml` (so CLI runs pick it up too, not
+just dashboard clicks). In production, collection runs on a schedule (e.g. a cron/systemd timer
+calling `radar collect`) rather than a manual click — this button is the same underlying
+operation, triggered on demand for the dashboard/demo case.
+
+`POST /api/collect` runs synchronously in-request, which is fine at this data volume but is a
+tradeoff a production version would background instead. **A live click against several search
+terms/sources can genuinely take a couple of minutes** (each request is politely paced ~1.2s
+apart, and a source that errors retries with backoff before moving on) — the button shows
+"Running…", gives up waiting client-side after 45s with an honest "still running on the server"
+message rather than hanging with no feedback, and the collection keeps going regardless (the
+abort only stops the browser from waiting, not the server-side work) — for a snappy live demo,
+check only 1-2 already-configured sources before clicking. If a source errors out mid-run
+(timeout, exhausted retries), it's isolated and reported in `sources_failed` — the run still
+completes and keeps whatever the other sources wrote; found this via live testing against
+Hacker News's real API, not hypothetically.
 
 ## Tests
 
@@ -212,7 +317,7 @@ pytest
 ```
 
 The whole suite runs against fixtures under
-`tests/fixtures/{reddit,anthropic,youtube,x,hackernews,stackoverflow,github}/` via
+`tests/fixtures/{reddit,anthropic,youtube,x,hackernews,stackoverflow,github,mastodon}/` via
 `respx`-mocked HTTP, plus FastAPI's `TestClient` for the dashboard API — no live credentials or
 network access required for any of it.
 
@@ -248,6 +353,19 @@ network access required for any of it.
   since Reddit gates new script-app creation behind a "valid moderation use case" review — see
   the Reddit setup section above; the other sources exist in part because Reddit access isn't
   guaranteed.
+- **Post-Phase-9:** `MastodonSource` (`radar/sources/mastodon.py`, one configured instance's
+  `/api/v2/search`, bearer-token auth — see "Creating a Mastodon access token" above), plus the
+  dashboard's source picker (`GET /api/sources`, `POST /api/collect` in `radar/api.py`) and the
+  Home-tab footprint graph becoming draggable/click-for-detail (`radar/static/dashboard.js`).
+  Bluesky was evaluated and excluded; Discord/LinkedIn/TikTok/Threads are cosmetic-only picker
+  entries — see "Platforms not included."
+- **Dashboard round 2:** left-sidebar navigation with a dedicated Settings tab; the client ×
+  risk-pattern watchlist (`effective_terms()` in `radar/config.py`, `GET`/`PUT
+  /api/search-terms` in `radar/api.py`, persisted to `config/search_terms.yaml`) plus
+  `matched_term` surfaced end-to-end (`radar/db.py`'s `get_alerts()`/`get_unscored_pain_points()`
+  → the Watching/Alerts tables and the footprint graph's detail panel/tooltip); footprint graph
+  filtering by platform (click a legend swatch) and category (chip row above the graph);
+  sortable Watching/Alerts columns.
 
 ## Data model
 
@@ -280,7 +398,8 @@ radar/
 │   ├── hackernews.py             # HackerNewsSource (Algolia HN Search API)
 │   ├── stackoverflow.py            # StackOverflowSource (Stack Exchange API)
 │   ├── github.py                     # GitHubSource (Issues search only, not Discussions)
-│   └── x.py                            # XSource (feature-flagged, inert without a paid token)
+│   ├── mastodon.py                     # MastodonSource (one instance, bearer-token auth)
+│   └── x.py                              # XSource (feature-flagged, inert without a paid token)
 ├── collect.py                             # orchestration across all configured sources: `radar collect`
 ├── classify.py                     # ClaudeClassifier + orchestration: `radar classify`
 ├── score.py                         # velocity scoring + alert suppression: `radar score`

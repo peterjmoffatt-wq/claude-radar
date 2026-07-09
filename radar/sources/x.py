@@ -87,6 +87,8 @@ class XSource:
                 "query": query,
                 "sort_order": sort_order,
                 "tweet.fields": TWEET_FIELDS,
+                "expansions": "author_id",
+                "user.fields": "username",
                 "max_results": min(MAX_PAGE_LIMIT, max(10, limit - len(posts))),
             }
             if start_time is not None:
@@ -99,7 +101,10 @@ class XSource:
             if not tweets:
                 break
 
-            posts.extend(self._map_post(tweet, matched_term=query) for tweet in tweets)
+            users_by_id = {u["id"]: u for u in data.get("includes", {}).get("users", [])}
+            posts.extend(
+                self._map_post(tweet, users_by_id, matched_term=query) for tweet in tweets
+            )
 
             next_token = data.get("meta", {}).get("next_token")
             if not next_token:
@@ -116,17 +121,19 @@ class XSource:
                 headers={"Authorization": f"Bearer {self._settings.x_bearer_token}"},
             )
             response.raise_for_status()
-        except httpx.HTTPStatusError as exc:
+        except httpx.HTTPError as exc:
             raise XAPIError(f"X search request failed: {exc}") from exc
         return response.json()
 
     @staticmethod
-    def _map_post(tweet: dict[str, Any], matched_term: str) -> RawPost:
+    def _map_post(tweet: dict[str, Any], users_by_id: dict[str, dict[str, Any]], matched_term: str) -> RawPost:
         metrics = tweet.get("public_metrics", {})
+        author_id = tweet.get("author_id", "unknown")
+        author = users_by_id.get(author_id, {}).get("username", author_id)
         return RawPost(
             id=f"x_{tweet['id']}",
             platform=Platform.X,
-            author=tweet.get("author_id", "unknown"),
+            author=author,
             text=tweet.get("text", ""),
             url=f"https://x.com/i/web/status/{tweet['id']}",
             created_at=datetime.fromisoformat(tweet["created_at"]),

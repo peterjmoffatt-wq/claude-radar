@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import html
+import re
 import time
 from datetime import datetime, timedelta, timezone
 from typing import Any, Callable
@@ -14,6 +16,8 @@ from radar.sources.base import SearchWindow
 SEARCH_URL = "https://api.stackexchange.com/2.3/search/advanced"
 
 MAX_PAGE_LIMIT = 100  # Stack Exchange's per-request cap
+
+_TAG_RE = re.compile(r"<[^>]+>")
 
 _WINDOW_DELTAS: dict[SearchWindow, timedelta | None] = {
     "hour": timedelta(hours=1),
@@ -48,6 +52,7 @@ class StackOverflowSource:
         self._client = client or httpx.Client()
         self._rate_limited = RateLimitedClient(self._client, sleep_fn=sleep_fn)
         self._max_pages = max_pages
+        self._sleep_fn = sleep_fn
 
     # -- Source interface -------------------------------------------------
 
@@ -79,6 +84,7 @@ class StackOverflowSource:
                 "order": "desc",
                 "page": page,
                 "pagesize": min(MAX_PAGE_LIMIT, limit - len(posts)),
+                "filter": "withbody",  # includes the question body -- otherwise only the title is returned
             }
             if since is not None:
                 params["fromdate"] = int(since.timestamp())
@@ -104,20 +110,30 @@ class StackOverflowSource:
             response.raise_for_status()
         except httpx.HTTPError as exc:
             raise StackOverflowAPIError(f"Stack Overflow search request failed: {exc}") from exc
-        return response.json()
+        data = response.json()
+        # Stack Exchange's documented throttling contract: a `backoff` field
+        # in the JSON body (not a header, and can appear on a 200) means
+        # "wait this many seconds before your next request" -- ignoring it
+        # risks an IP ban, unlike the generic RateLimitedClient's header-only
+        # handling which doesn't know about this API's body shape.
+        backoff = data.get("backoff")
+        if backoff:
+            self._sleep_fn(float(backoff))
+        return data
 
     @staticmethod
     def _map_post(item: dict[str, Any], matched_term: str) -> RawPost:
         question_id = item["question_id"]
         owner = item.get("owner") or {}
+        title = item.get("title", "")
+        body_text = html.unescape(_TAG_RE.sub("", item.get("body") or ""))
+        text = f"{title}\n\n{body_text}" if body_text else title
 
         return RawPost(
             id=f"so_{question_id}",
             platform=Platform.STACK_OVERFLOW,
             author=owner.get("display_name") or "unknown",
-            # SO question bodies are HTML; skip stripping it and use the title,
-            # which is almost always descriptive enough on its own.
-            text=item.get("title", ""),
+            text=text,
             url=item.get("link", f"https://stackoverflow.com/q/{question_id}"),
             created_at=datetime.fromtimestamp(item["creation_date"], tz=timezone.utc),
             metrics=Metrics(

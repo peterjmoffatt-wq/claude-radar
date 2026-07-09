@@ -40,6 +40,35 @@ def test_search_top_maps_fixture_to_rawpost(settings_factory, load_x_fixture):
 
 
 @respx.mock
+def test_uses_real_username_when_includes_users_present(settings_factory, load_x_fixture):
+    route = respx.get(SEARCH_URL).mock(
+        return_value=httpx.Response(200, json=load_x_fixture("search_with_username.json"))
+    )
+
+    source = make_source(settings_factory)
+    posts = source.search_top("claude api", window="week", limit=50)
+
+    assert posts[0].author == "claude_watcher"
+    sent_params = dict(httpx.QueryParams(route.calls.last.request.url.query))
+    assert sent_params["expansions"] == "author_id"
+    assert sent_params["user.fields"] == "username"
+
+
+@respx.mock
+def test_falls_back_to_author_id_when_no_matching_user_included(settings_factory, load_x_fixture):
+    # search_recent_page1.json has no `includes.users` at all -- must not
+    # crash, and must fall back to the raw author_id like before this fix.
+    respx.get(SEARCH_URL).mock(
+        return_value=httpx.Response(200, json=load_x_fixture("search_recent_page1.json"))
+    )
+
+    source = make_source(settings_factory)
+    posts = source.search_top("claude api", window="week", limit=50)
+
+    assert posts[0].author == "555"
+
+
+@respx.mock
 def test_search_recent_filters_by_since(settings_factory, load_x_fixture):
     respx.get(SEARCH_URL).mock(
         return_value=httpx.Response(200, json=load_x_fixture("search_recent_page1.json"))
@@ -127,3 +156,16 @@ def test_retries_exhausted_raises(settings_factory):
         source.search_top("claude api", window="week", limit=50)
 
     assert route.call_count > 1
+
+
+@respx.mock
+def test_connection_timeout_raises_x_api_error_not_raw_httpx_error(settings_factory):
+    # A transport-level failure must convert to XAPIError the same way an
+    # HTTP error status does -- previously this only caught
+    # httpx.HTTPStatusError, so a timeout would escape as a raw httpx exception.
+    respx.get(SEARCH_URL).mock(side_effect=httpx.ConnectTimeout("timed out"))
+
+    source = make_source(settings_factory)
+
+    with pytest.raises(XAPIError):
+        source.search_top("claude api", window="week", limit=50)

@@ -3,7 +3,15 @@ from __future__ import annotations
 import pytest
 from pydantic import ValidationError
 
-from radar.config import Settings, load_known_incidents, load_search_terms
+from radar.config import (
+    DEFAULT_RISK_PATTERNS,
+    MAX_EFFECTIVE_TERMS,
+    Settings,
+    effective_terms,
+    load_known_incidents,
+    load_search_terms,
+    save_search_terms,
+)
 
 
 def test_settings_defaults_applied_when_unset():
@@ -68,3 +76,67 @@ def test_load_known_incidents_empty_file_returns_empty_list(tmp_path):
     yaml_path = tmp_path / "known_incidents.yaml"
     yaml_path.write_text("")
     assert load_known_incidents(path=yaml_path) == []
+
+
+def test_load_search_terms_defaults_clients_and_risk_patterns(tmp_path):
+    yaml_path = tmp_path / "search_terms.yaml"
+    yaml_path.write_text('subreddits:\n  - TestSub\nterms:\n  - "test term"\n')
+    data = load_search_terms(path=yaml_path)
+    assert data["clients"] == []
+    assert data["risk_patterns"] == DEFAULT_RISK_PATTERNS
+
+
+def test_save_search_terms_round_trips_and_preserves_untouched_fields(tmp_path):
+    yaml_path = tmp_path / "search_terms.yaml"
+    yaml_path.write_text(
+        "subreddits:\n  - ClaudeAI\nterms:\n  - old term\nclients: []\nrisk_patterns: []\n"
+    )
+
+    save_search_terms(
+        {"terms": ["new term"], "clients": ["McDonald's"], "risk_patterns": ["jailbreak"]},
+        path=yaml_path,
+    )
+
+    reloaded = load_search_terms(path=yaml_path)
+    assert reloaded["subreddits"] == ["ClaudeAI"]  # untouched by the update
+    assert reloaded["terms"] == ["new term"]
+    assert reloaded["clients"] == ["McDonald's"]
+    assert reloaded["risk_patterns"] == ["jailbreak"]
+
+
+def test_effective_terms_crosses_clients_with_risk_patterns():
+    config = {
+        "terms": ["Claude API", "claude down"],
+        "clients": ["McDonald's", "Acme Corp"],
+        "risk_patterns": ["jailbreak", "credential leak"],
+    }
+    assert effective_terms(config) == [
+        "Claude API",
+        "claude down",
+        "McDonald's jailbreak",
+        "McDonald's credential leak",
+        "Acme Corp jailbreak",
+        "Acme Corp credential leak",
+    ]
+
+
+def test_effective_terms_with_no_clients_returns_generic_terms_only():
+    config = {"terms": ["Claude API"], "clients": [], "risk_patterns": ["jailbreak"]}
+    assert effective_terms(config) == ["Claude API"]
+
+
+def test_effective_terms_truncated_to_max_with_generic_terms_kept_first():
+    # A full watchlist (10 generic + 10 clients x 10 patterns = 110) can
+    # exhaust YouTube's daily search quota in one run -- effective_terms()
+    # truncates to MAX_EFFECTIVE_TERMS, keeping every generic term before any
+    # cross-product term is dropped.
+    generic = [f"term{i}" for i in range(10)]
+    clients = [f"client{i}" for i in range(10)]
+    patterns = [f"pattern{i}" for i in range(10)]
+    config = {"terms": generic, "clients": clients, "risk_patterns": patterns}
+
+    result = effective_terms(config)
+
+    assert len(result) == MAX_EFFECTIVE_TERMS
+    assert result[: len(generic)] == generic
+    assert all(term not in generic for term in result[len(generic) :])

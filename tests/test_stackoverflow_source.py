@@ -37,6 +37,26 @@ def test_search_top_maps_fixture_to_rawpost(settings_factory, load_stackoverflow
 
 
 @respx.mock
+def test_search_requests_withbody_filter_and_strips_html_into_text(
+    settings_factory, load_stackoverflow_fixture
+):
+    route = respx.get(SEARCH_URL).mock(
+        return_value=httpx.Response(200, json=load_stackoverflow_fixture("search_top_with_body.json"))
+    )
+
+    source = make_source(settings_factory)
+    posts = source.search_top("claude api", window="week", limit=50)
+
+    sent_params = dict(httpx.QueryParams(route.calls.last.request.url.query))
+    assert sent_params["filter"] == "withbody"
+
+    first = posts[0]
+    assert "Claude API returning 429 too many requests" in first.text
+    assert "<p>" not in first.text
+    assert "keeps erroring" in first.text  # body content survived HTML-stripping
+
+
+@respx.mock
 def test_search_recent_filters_by_since(settings_factory, load_stackoverflow_fixture):
     respx.get(SEARCH_URL).mock(
         return_value=httpx.Response(200, json=load_stackoverflow_fixture("search_top_page1.json"))
@@ -105,6 +125,36 @@ def test_no_api_key_param_when_not_configured(settings_factory, load_stackoverfl
 
     sent_params = dict(httpx.QueryParams(route.calls.last.request.url.query))
     assert "key" not in sent_params
+
+
+@respx.mock
+def test_stack_exchange_backoff_field_triggers_extra_sleep(settings_factory, load_stackoverflow_fixture):
+    # Stack Exchange's documented throttling contract: a `backoff` field in a
+    # successful (200) JSON body means "wait this many seconds" -- distinct
+    # from RateLimitedClient's header-only 429/5xx handling, which never sees
+    # this API's response body at all.
+    fixture = load_stackoverflow_fixture("search_top_page1.json")
+    fixture["backoff"] = 12
+    respx.get(SEARCH_URL).mock(return_value=httpx.Response(200, json=fixture))
+
+    sleeps: list[float] = []
+    source = make_source(settings_factory, sleep_fn=sleeps.append)
+    source.search_top("claude api", window="week", limit=50)
+
+    assert 12.0 in sleeps
+
+
+@respx.mock
+def test_no_backoff_field_does_not_sleep(settings_factory, load_stackoverflow_fixture):
+    respx.get(SEARCH_URL).mock(
+        return_value=httpx.Response(200, json=load_stackoverflow_fixture("search_top_page1.json"))
+    )
+
+    sleeps: list[float] = []
+    source = make_source(settings_factory, sleep_fn=sleeps.append)
+    source.search_top("claude api", window="week", limit=50)
+
+    assert sleeps == []
 
 
 @respx.mock

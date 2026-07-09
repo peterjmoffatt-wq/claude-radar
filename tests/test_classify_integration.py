@@ -109,6 +109,61 @@ def test_one_bad_response_does_not_block_the_rest_of_the_batch(
 
 
 @respx.mock
+def test_gives_up_after_max_classify_attempts_and_writes_sentinel(settings_factory, load_anthropic_fixture):
+    settings = settings_factory()
+    _seed_snapshots(settings, [_post("t3_bad")])
+    # 3 consecutive bad responses (no tool_use block) -- one per run_classification() call.
+    route = respx.post(API_URL).mock(
+        return_value=httpx.Response(200, json=load_anthropic_fixture("classify_no_tool_use.json"))
+    )
+
+    results = [
+        classify_module.run_classification(settings, sleep_fn=lambda s: None)
+        for _ in range(classify_module.MAX_CLASSIFY_ATTEMPTS)
+    ]
+    # Every attempt but the last writes nothing (still under the cap); the
+    # final attempt crosses MAX_CLASSIFY_ATTEMPTS and writes the sentinel row.
+    assert [r.posts_classified for r in results] == [0, 0, 1]
+
+    # A sentinel row should now exist.
+    conn = get_connection(settings.database_path)
+    row = conn.execute(
+        "SELECT is_pain_point, classifier_model FROM classifications WHERE post_id = 't3_bad'"
+    ).fetchone()
+    conn.close()
+    assert row == (0, "failed")
+
+    # A later run must not pick the now-classified post back up.
+    classify_module.run_classification(settings, sleep_fn=lambda s: None)
+    assert route.call_count == classify_module.MAX_CLASSIFY_ATTEMPTS
+
+
+@respx.mock
+def test_recovers_after_transient_failure_not_marked_failed(settings_factory, load_anthropic_fixture):
+    settings = settings_factory()
+    _seed_snapshots(settings, [_post("t3_flaky")])
+    respx.post(API_URL).mock(
+        side_effect=[
+            httpx.Response(200, json=load_anthropic_fixture("classify_no_tool_use.json")),
+            httpx.Response(200, json=load_anthropic_fixture("classify_pain_point.json")),
+        ]
+    )
+
+    first = classify_module.run_classification(settings, sleep_fn=lambda s: None)
+    assert first.posts_classified == 0
+    second = classify_module.run_classification(settings, sleep_fn=lambda s: None)
+    assert second.posts_classified == 1
+
+    conn = get_connection(settings.database_path)
+    row = conn.execute(
+        "SELECT is_pain_point, classifier_model FROM classifications WHERE post_id = 't3_flaky'"
+    ).fetchone()
+    conn.close()
+    assert row[0] == 1
+    assert row[1] != "failed"
+
+
+@respx.mock
 def test_run_classification_noop_when_credentials_missing(settings_factory):
     settings = settings_factory(anthropic_api_key="")
 

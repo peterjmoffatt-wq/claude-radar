@@ -1,0 +1,36 @@
+{
+  "accounts": [],
+  "hashtags": [],
+  "statuses": [
+    {
+      "id": "3001",
+      "uri": "https://mastodon.social/users/old_poster/statuses/3001",
+      "url": "https://mastodon.social/@old_poster/3001",
+      "account": {
+        "id": "200",
+        "username": "old_poster",
+        "acct": "old_poster@mastodon.social"
+      },
+      "content": "<p>Old claude api post, before the cutoff.</p>",
+      "created_at": "2023-10-01T10:00:00.000Z",
+      "reblogs_count": 0,
+      "favourites_count": 1,
+      "replies_count": 0
+    },
+    {
+      "id": "3002",
+      "uri": "https://mastodon.social/users/older_poster/statuses/3002",
+      "url": "https://mastodon.social/@older_poster/3002",
+      "account": {
+        "id": "201",
+        "username": "older_poster",
+        "acct": "older_poster@mastodon.social"
+      },
+      "content": "<p>Even older claude api post.</p>",
+      "created_at": "2023-09-01T10:00:00.000Z",
+      "reblogs_count": 0,
+      "favourites_count": 0,
+      "replies_count": 0
+    }
+  ]
+}

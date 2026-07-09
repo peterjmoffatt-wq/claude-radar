@@ -27,13 +27,28 @@ def test_compute_velocity_can_be_negative():
     assert compute_velocity(history) == -40.0
 
 
-def _insert_snapshot(conn, post_id: str, collected_at: datetime, score_value: float) -> None:
+def _insert_snapshot(
+    conn,
+    post_id: str,
+    collected_at: datetime,
+    score_value: float,
+    poll_run_id: str = "run-1",
+    platform: str = "reddit",
+) -> None:
     conn.execute(
         """
         INSERT INTO snapshots (post_id, platform, poll_run_id, collected_at, created_at, url, virality_score, search_pass)
-        VALUES (?, 'reddit', 'run-1', ?, ?, ?, ?, 'top')
+        VALUES (?, ?, ?, ?, ?, ?, ?, 'top')
         """,
-        (post_id, collected_at.isoformat(), collected_at.isoformat(), f"https://x/{post_id}", score_value),
+        (
+            post_id,
+            platform,
+            poll_run_id,
+            collected_at.isoformat(),
+            collected_at.isoformat(),
+            f"https://x/{post_id}",
+            score_value,
+        ),
     )
     conn.commit()
 
@@ -62,8 +77,8 @@ def _seeded_conn(settings):
 def test_run_scoring_writes_alert_for_accelerating_pain_point(settings_factory):
     settings = settings_factory(velocity_threshold=10.0)
     conn = _seeded_conn(settings)
-    _insert_snapshot(conn, "t3_a", BASE, 10.0)
-    _insert_snapshot(conn, "t3_a", BASE + timedelta(hours=1), 50.0)  # velocity = 40/hr
+    _insert_snapshot(conn, "t3_a", BASE, 10.0, poll_run_id="run-1")
+    _insert_snapshot(conn, "t3_a", BASE + timedelta(hours=1), 50.0, poll_run_id="run-2")  # velocity = 40/hr
     _insert_classification(conn, "t3_a", category="product_bug")
     conn.close()
 
@@ -82,8 +97,8 @@ def test_run_scoring_writes_alert_for_accelerating_pain_point(settings_factory):
 def test_run_scoring_sets_pending_qa_for_sensitive_category(settings_factory):
     settings = settings_factory(velocity_threshold=10.0)
     conn = _seeded_conn(settings)
-    _insert_snapshot(conn, "t3_b", BASE, 10.0)
-    _insert_snapshot(conn, "t3_b", BASE + timedelta(hours=1), 50.0)
+    _insert_snapshot(conn, "t3_b", BASE, 10.0, poll_run_id="run-1")
+    _insert_snapshot(conn, "t3_b", BASE + timedelta(hours=1), 50.0, poll_run_id="run-2")
     _insert_classification(conn, "t3_b", category="abuse")
     conn.close()
 
@@ -98,8 +113,8 @@ def test_run_scoring_sets_pending_qa_for_sensitive_category(settings_factory):
 def test_run_scoring_skips_below_threshold(settings_factory):
     settings = settings_factory(velocity_threshold=100.0)
     conn = _seeded_conn(settings)
-    _insert_snapshot(conn, "t3_c", BASE, 10.0)
-    _insert_snapshot(conn, "t3_c", BASE + timedelta(hours=1), 50.0)  # velocity = 40/hr, below 100
+    _insert_snapshot(conn, "t3_c", BASE, 10.0, poll_run_id="run-1")
+    _insert_snapshot(conn, "t3_c", BASE + timedelta(hours=1), 50.0, poll_run_id="run-2")  # velocity = 40/hr, below 100
     _insert_classification(conn, "t3_c")
     conn.close()
 
@@ -115,8 +130,8 @@ def test_run_scoring_skips_below_threshold(settings_factory):
 def test_run_scoring_ignores_non_pain_points(settings_factory):
     settings = settings_factory(velocity_threshold=10.0)
     conn = _seeded_conn(settings)
-    _insert_snapshot(conn, "t3_d", BASE, 10.0)
-    _insert_snapshot(conn, "t3_d", BASE + timedelta(hours=1), 50.0)
+    _insert_snapshot(conn, "t3_d", BASE, 10.0, poll_run_id="run-1")
+    _insert_snapshot(conn, "t3_d", BASE + timedelta(hours=1), 50.0, poll_run_id="run-2")
     _insert_classification(conn, "t3_d", is_pain_point=False)
     conn.close()
 
@@ -128,8 +143,8 @@ def test_run_scoring_ignores_non_pain_points(settings_factory):
 def test_run_scoring_suppresses_repeat_alert_unless_accelerating(settings_factory):
     settings = settings_factory(velocity_threshold=10.0)
     conn = _seeded_conn(settings)
-    _insert_snapshot(conn, "t3_e", BASE, 10.0)
-    _insert_snapshot(conn, "t3_e", BASE + timedelta(hours=1), 50.0)  # velocity 40/hr
+    _insert_snapshot(conn, "t3_e", BASE, 10.0, poll_run_id="run-1")
+    _insert_snapshot(conn, "t3_e", BASE + timedelta(hours=1), 50.0, poll_run_id="run-2")  # velocity 40/hr
     _insert_classification(conn, "t3_e")
     conn.close()
 
@@ -138,7 +153,7 @@ def test_run_scoring_suppresses_repeat_alert_unless_accelerating(settings_factor
 
     # Same velocity again (another snapshot at the same rate) -- not accelerating further.
     conn = get_connection(settings.database_path)
-    _insert_snapshot(conn, "t3_e", BASE + timedelta(hours=2), 90.0)  # still 40/hr
+    _insert_snapshot(conn, "t3_e", BASE + timedelta(hours=2), 90.0, poll_run_id="run-3")  # still 40/hr
     conn.close()
 
     second = run_scoring(settings)
@@ -146,7 +161,9 @@ def test_run_scoring_suppresses_repeat_alert_unless_accelerating(settings_factor
 
     # Now it accelerates past the last alert's velocity -- should re-fire.
     conn = get_connection(settings.database_path)
-    _insert_snapshot(conn, "t3_e", BASE + timedelta(hours=2, minutes=30), 150.0)  # 120/hr over last 30 min
+    _insert_snapshot(
+        conn, "t3_e", BASE + timedelta(hours=2, minutes=30), 150.0, poll_run_id="run-4"
+    )  # 120/hr over last 30 min
     conn.close()
 
     third = run_scoring(settings)
@@ -167,3 +184,42 @@ def test_run_scoring_skipped_when_no_pain_points(settings_factory):
 
     assert result.skipped is True
     assert result.alerts_written == 0
+
+
+def test_velocity_threshold_overrides_default_to_unchanged_behavior(settings_factory):
+    # No overrides configured -- every platform must behave exactly like the
+    # flat global threshold did before this feature existed.
+    settings = settings_factory(velocity_threshold=10.0)
+    conn = _seeded_conn(settings)
+    _insert_snapshot(conn, "t3_yt", BASE, 10.0, poll_run_id="run-1", platform="youtube")
+    _insert_snapshot(conn, "t3_yt", BASE + timedelta(hours=1), 50.0, poll_run_id="run-2", platform="youtube")
+    _insert_classification(conn, "t3_yt")
+    conn.close()
+
+    result = run_scoring(settings)
+
+    assert result.alerts_written == 1
+
+
+def test_velocity_threshold_override_applies_per_platform(settings_factory):
+    settings = settings_factory(
+        velocity_threshold=10.0, velocity_threshold_overrides={"youtube": 500.0}
+    )
+    conn = _seeded_conn(settings)
+    # YouTube post accelerating at 40/hr -- below its 500/hr override, no alert.
+    _insert_snapshot(conn, "t3_yt", BASE, 10.0, poll_run_id="run-1", platform="youtube")
+    _insert_snapshot(conn, "t3_yt", BASE + timedelta(hours=1), 50.0, poll_run_id="run-2", platform="youtube")
+    _insert_classification(conn, "t3_yt")
+    # Reddit post at the same 40/hr -- still only needs the global 10/hr default.
+    _insert_snapshot(conn, "t3_reddit", BASE, 10.0, poll_run_id="run-1", platform="reddit")
+    _insert_snapshot(conn, "t3_reddit", BASE + timedelta(hours=1), 50.0, poll_run_id="run-2", platform="reddit")
+    _insert_classification(conn, "t3_reddit")
+    conn.close()
+
+    result = run_scoring(settings)
+
+    assert result.alerts_written == 1
+    conn = get_connection(settings.database_path)
+    alerted = {row[0] for row in conn.execute("SELECT post_id FROM alerts").fetchall()}
+    conn.close()
+    assert alerted == {"t3_reddit"}

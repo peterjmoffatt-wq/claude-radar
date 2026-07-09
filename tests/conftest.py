@@ -82,6 +82,16 @@ def load_github_fixture():
 
 
 @pytest.fixture
+def load_mastodon_fixture():
+    def _load(name: str) -> dict:
+        path = FIXTURES_DIR / "mastodon" / name
+        with open(path, encoding="utf-8") as f:
+            return json.load(f)
+
+    return _load
+
+
+@pytest.fixture
 def settings_factory(tmp_path):
     def _make(**overrides) -> Settings:
         defaults = dict(

@@ -1,0 +1,18 @@
+{
+  "items": [
+    {
+      "question_id": 5001,
+      "title": "Claude API returning 429 too many requests",
+      "body": "<p>My integration <b>keeps erroring</b> with a 429 status.</p>",
+      "link": "https://stackoverflow.com/questions/5001/claude-api-429",
+      "owner": {"display_name": "dev_so_1"},
+      "score": 12,
+      "answer_count": 3,
+      "view_count": 500,
+      "creation_date": 1698840000
+    }
+  ],
+  "has_more": false,
+  "quota_max": 300,
+  "quota_remaining": 299
+}

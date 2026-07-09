@@ -13,6 +13,7 @@ class Platform(str, Enum):
     X = "x"  # feature-flagged
     STACK_OVERFLOW = "stackoverflow"
     GITHUB = "github"
+    MASTODON = "mastodon"
 
 
 class Metrics(BaseModel):
@@ -70,6 +71,12 @@ class Classification(BaseModel):
 
     post_id: str
     is_pain_point: bool
+    # Promotional/competitor-poaching content that borrows pain-point language
+    # on purpose (e.g. "you burned your token usage, get free access with
+    # <competitor>") rather than a genuine complaint. radar/classify.py
+    # defensively forces is_pain_point=False whenever this is True, so the
+    # exclusion doesn't depend on the model setting both fields consistently.
+    is_advertisement: bool = False
     category: PainCategory
     model_implicated: ModelImplicated
     severity: Severity

@@ -10,7 +10,13 @@ import httpx
 from pydantic import ValidationError
 
 from radar.config import Settings, get_settings
-from radar.db import get_connection, get_unclassified_posts, init_db, write_classifications
+from radar.db import (
+    get_connection,
+    get_unclassified_posts,
+    init_db,
+    record_classification_failure,
+    write_classifications,
+)
 from radar.http_utils import RateLimitedClient
 from radar.models import Classification, ISSUE_SUMMARY_MAX_LENGTH, ModelImplicated, PainCategory, Severity
 
@@ -21,6 +27,12 @@ ANTHROPIC_VERSION = "2023-06-01"
 
 MAX_TEXT_CHARS = 4000  # keep prompt size (and cost) bounded; posts are short anyway
 MAX_TOKENS = 512
+
+# A post that keeps failing to classify (bad response shape, persistent API
+# error) never gets a `classifications` row otherwise, so it's re-fetched
+# (and re-billed) by every future run forever. After this many failed
+# attempts, give up and write a sentinel row instead of retrying indefinitely.
+MAX_CLASSIFY_ATTEMPTS = 3
 
 TOOL_NAME = "record_classification"
 
@@ -37,7 +49,16 @@ CLASSIFICATION_TOOL: dict[str, Any] = {
                 "type": "boolean",
                 "description": "True if the post describes a genuine pain point (a bug, "
                 "outage, confusing behavior, abuse, or safety/credential issue) rather than "
-                "e.g. praise, unrelated chatter, or a resolved non-issue.",
+                "e.g. praise, unrelated chatter, or a resolved non-issue. Must be false "
+                "whenever is_advertisement is true.",
+            },
+            "is_advertisement": {
+                "type": "boolean",
+                "description": "True if the post is promotional or competitor-poaching "
+                "content that borrows pain-point language on purpose -- e.g. \"you burned "
+                "your token usage, get free access with <competitor>\" -- engagement-bait, "
+                "or unrelated advertising, rather than a genuine complaint. This is true "
+                "even if the text mentions the same keywords a real pain point would.",
             },
             "category": {
                 "type": "string",
@@ -62,6 +83,7 @@ CLASSIFICATION_TOOL: dict[str, Any] = {
         },
         "required": [
             "is_pain_point",
+            "is_advertisement",
             "category",
             "model_implicated",
             "severity",
@@ -91,7 +113,10 @@ def _build_prompt(platform: str, text: str, url: str) -> str:
         "You are triaging public posts for a product-signal monitoring tool that watches "
         "for real pain points affecting Claude (Anthropic's AI) and the Claude API. "
         "Decide whether this post describes a genuine pain point, and if so, classify it. "
-        "Use `record_classification` to record your answer.\n\n"
+        "Watch for posts that exploit Claude-related pain-point language on purpose to "
+        "advertise a competitor or run a scam -- e.g. \"you burned your token usage, get "
+        "free access with Perplexity\" -- and mark those is_advertisement instead of "
+        "is_pain_point. Use `record_classification` to record your answer.\n\n"
         f"Platform: {platform}\n"
         f"URL: {url}\n"
         f"Post text:\n{truncated}"
@@ -150,6 +175,12 @@ class ClaudeClassifier:
             # never gets a classifications row to mark it done).
             tool_input["issue_summary"] = _truncate(tool_input["issue_summary"])
 
+        if tool_input.get("is_advertisement"):
+            # Don't rely on the model keeping both fields consistent -- enforce
+            # the invariant here so ads are excluded from Watching/Alerts even if
+            # is_pain_point comes back true alongside is_advertisement=true.
+            tool_input["is_pain_point"] = False
+
         try:
             return Classification(post_id=post_id, **tool_input)
         except ValidationError as exc:
@@ -196,11 +227,30 @@ def run_classification(
         pending = get_unclassified_posts(conn, limit=limit or settings.classify_batch_limit)
 
         classifications: list[Classification] = []
+        gave_up: list[Classification] = []
         for post_id, platform, raw_text, url in pending:
             try:
                 classification = classifier.classify(post_id, platform, raw_text or "", url)
             except ClassifierAPIError:
                 logger.exception("post_id=%s classification failed; skipping", post_id)
+                attempts = record_classification_failure(conn, post_id)
+                if attempts >= MAX_CLASSIFY_ATTEMPTS:
+                    logger.warning(
+                        "post_id=%s gave up after %d failed classification attempts",
+                        post_id,
+                        attempts,
+                    )
+                    gave_up.append(
+                        Classification(
+                            post_id=post_id,
+                            is_pain_point=False,
+                            is_advertisement=False,
+                            category=PainCategory.OTHER,
+                            model_implicated=ModelImplicated.UNKNOWN,
+                            severity=Severity.LOW,
+                            issue_summary=f"Classification failed after {attempts} attempts.",
+                        )
+                    )
                 continue
             classifications.append(classification)
             logger.info(
@@ -212,6 +262,7 @@ def run_classification(
             )
 
         written = write_classifications(conn, classifications, settings.classifier_model)
+        written += write_classifications(conn, gave_up, "failed")
     finally:
         conn.close()
 

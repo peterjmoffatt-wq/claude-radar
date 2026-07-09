@@ -1,0 +1,39 @@
+{
+  "accounts": [],
+  "hashtags": [],
+  "statuses": [
+    {
+      "id": "1001",
+      "uri": "https://mastodon.social/users/mid_engagement/statuses/1001",
+      "url": "https://mastodon.social/@mid_engagement/1001",
+      "account": {"id": "10", "username": "mid_engagement", "acct": "mid_engagement@mastodon.social"},
+      "content": "<p>Claude API is <strong>great</strong> but the rate limits during peak hours really hurt.</p>",
+      "created_at": "2023-11-01T12:00:00.000Z",
+      "reblogs_count": 1,
+      "favourites_count": 5,
+      "replies_count": 2
+    },
+    {
+      "id": "1002",
+      "uri": "https://mastodon.social/users/top_engagement/statuses/1002",
+      "url": "https://mastodon.social/@top_engagement/1002",
+      "account": {"id": "11", "username": "top_engagement", "acct": "top_engagement@mastodon.social"},
+      "content": "<p>Huge thread on switching our whole pipeline to the Claude API.</p>",
+      "created_at": "2023-11-01T09:00:00.000Z",
+      "reblogs_count": 10,
+      "favourites_count": 20,
+      "replies_count": 4
+    },
+    {
+      "id": "1003",
+      "uri": "https://mastodon.social/users/low_engagement/statuses/1003",
+      "url": "https://mastodon.social/@low_engagement/1003",
+      "account": {"id": "12", "username": "low_engagement", "acct": "low_engagement@mastodon.social"},
+      "content": "<p>anthropic api key rotation reminder for myself</p>",
+      "created_at": "2023-11-01T06:00:00.000Z",
+      "reblogs_count": 0,
+      "favourites_count": 2,
+      "replies_count": 0
+    }
+  ]
+}

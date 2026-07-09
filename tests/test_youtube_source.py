@@ -142,3 +142,16 @@ def test_retries_exhausted_raises(settings_factory):
         source.search_top("claude api", window="week", limit=50)
 
     assert route.call_count > 1
+
+
+@respx.mock
+def test_connection_timeout_raises_youtube_api_error_not_raw_httpx_error(settings_factory):
+    # A transport-level failure must convert to YouTubeAPIError the same way
+    # an HTTP error status does -- previously this only caught
+    # httpx.HTTPStatusError, so a timeout would escape as a raw httpx exception.
+    respx.get(SEARCH_URL).mock(side_effect=httpx.ConnectTimeout("timed out"))
+
+    source = make_source(settings_factory)
+
+    with pytest.raises(YouTubeAPIError):
+        source.search_top("claude api", window="week", limit=50)

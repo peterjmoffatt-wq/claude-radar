@@ -78,6 +78,44 @@ def test_remaining_above_one_does_not_sleep_even_with_reset_header():
 
 
 @respx.mock
+def test_retry_after_header_sleeps_for_given_seconds_not_exponential_backoff():
+    route = respx.get(URL).mock(
+        side_effect=[
+            httpx.Response(429, headers={"retry-after": "7"}),
+            httpx.Response(200),
+        ]
+    )
+
+    sleeps: list[float] = []
+    client = make_client(sleep_fn=sleeps.append)
+    response = client.request("GET", URL)
+
+    assert route.call_count == 2
+    assert response.status_code == 200
+    # Pacing between requests (min_interval) also sleeps, so check membership
+    # rather than the full list -- matches the existing 429-retry test's approach.
+    assert 7.0 in sleeps
+
+
+@respx.mock
+def test_unparseable_retry_after_falls_back_to_exponential_backoff():
+    route = respx.get(URL).mock(
+        side_effect=[
+            httpx.Response(429, headers={"retry-after": "Wed, 21 Oct 2099 07:28:00 GMT"}),
+            httpx.Response(200),
+        ]
+    )
+
+    sleeps: list[float] = []
+    client = make_client(sleep_fn=sleeps.append)
+    response = client.request("GET", URL)
+
+    assert route.call_count == 2
+    assert response.status_code == 200
+    assert 7.0 not in sleeps  # not misread as 7 seconds -- fell back to backoff instead
+
+
+@respx.mock
 def test_backoff_then_retry_on_429_still_works(monkeypatch):
     # Guard against a regression breaking the existing 429-retry path while fixing
     # the rate-limit-header handling.

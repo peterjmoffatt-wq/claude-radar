@@ -58,10 +58,10 @@ def run_scoring(settings: Settings | None = None) -> ScoringResult:
             return ScoringResult(alerts_written=0, skipped=True)
 
         written = 0
-        for post_id, category, severity in pain_points:
+        for post_id, category, severity, platform in pain_points:
             history = get_snapshot_history(conn, post_id)
             velocity = compute_velocity(history)
-            if velocity is None or velocity < settings.velocity_threshold:
+            if velocity is None or velocity < settings.velocity_threshold_for(platform):
                 continue
 
             last_alert_velocity = get_latest_alert_velocity(conn, post_id)

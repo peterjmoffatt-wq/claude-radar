@@ -16,9 +16,13 @@
     low: { dot: "good", label: "Low" },
   };
 
-  // Platform identity colors for the footprint graph -- categorical slots
-  // 1/2/3/4/6/8, validated --pairs all (any two bubbles can end up adjacent in a
-  // force layout; slots 5/7 were tried and rejected -- see dashboard.css).
+  // Platform identity = hue + shape, not hue alone (see dashboard.css for the
+  // full history of why 6 mutually-safe, non-red/orange/green hues don't
+  // fit). Only 4 validated hues; Reddit/YouTube share one (circle/diamond)
+  // and HackerNews/X share another (circle/diamond); Mastodon is shape-only
+  // (square) on a neutral tone, as before. This is the dataviz skill's
+  // prescribed fix for "more categories than safely-distinguishable hues":
+  // composite (hue x shape) encoding, not an invented hue.
   const PLATFORM_COLOR_VAR = {
     reddit: "--platform-reddit",
     youtube: "--platform-youtube",
@@ -27,6 +31,15 @@
     github: "--platform-github",
     stackoverflow: "--platform-stackoverflow",
   };
+  const PLATFORM_SHAPE = {
+    reddit: "circle",
+    youtube: "diamond",
+    x: "diamond",
+    hackernews: "circle",
+    github: "circle",
+    stackoverflow: "circle",
+    mastodon: "square",
+  };
   const PLATFORM_LABEL = {
     reddit: "Reddit",
     youtube: "YouTube",
@@ -34,7 +47,34 @@
     hackernews: "Hacker News",
     github: "GitHub",
     stackoverflow: "Stack Overflow",
+    mastodon: "Mastodon",
   };
+
+  function platformShapeSuffix(platform) {
+    const shape = PLATFORM_SHAPE[platform];
+    return shape && shape !== "circle" ? ` (${shape}-shaped)` : "";
+  }
+
+  // Every real, working platform this dashboard can search, plus the ones that
+  // exist only as a picker entry -- an interview talking point for what a
+  // partner-API-funded version would add next. Neither list is a Platform enum
+  // value on the backend for the "coming soon" entries; they're never sent to
+  // POST /api/collect.
+  const REAL_SOURCES = [
+    "reddit",
+    "youtube",
+    "hackernews",
+    "stackoverflow",
+    "github",
+    "x",
+    "mastodon",
+  ];
+  const COMING_SOON_SOURCES = [
+    { key: "discord", label: "Discord" },
+    { key: "linkedin", label: "LinkedIn" },
+    { key: "tiktok", label: "TikTok" },
+    { key: "threads", label: "Threads" },
+  ];
 
   // -- tooltip -----------------------------------------------------------
 
@@ -82,6 +122,15 @@
     const d = new Date(iso);
     if (Number.isNaN(d.getTime())) return iso;
     return d.toLocaleString();
+  }
+
+  function formatEngagement(row) {
+    const parts = [];
+    if (row.likes) parts.push(`👍${row.likes.toLocaleString()}`);
+    if (row.comments) parts.push(`💬${row.comments.toLocaleString()}`);
+    if (row.score) parts.push(`↑${row.score.toLocaleString()}`);
+    if (row.shares) parts.push(`⇄${row.shares.toLocaleString()}`);
+    return parts.join(" · ");
   }
 
   function formatMinutes(seconds) {
@@ -218,6 +267,34 @@
     }
   }
 
+  // -- spam/ads-filtered stat tile --------------------------------------------
+
+  async function loadAdStats() {
+    const container = document.getElementById("ads-stat");
+    try {
+      const data = await fetchJSON("/api/stats");
+      renderAdStats(container, data);
+    } catch (err) {
+      renderEmpty(container, "Failed to load ad-filtering stats.");
+    }
+  }
+
+  function renderAdStats(container, data) {
+    container.textContent = "";
+
+    const value = document.createElement("p");
+    value.className = "stat-value";
+    value.textContent = String(data.ads_filtered);
+
+    const label = document.createElement("p");
+    label.className = "stat-label";
+    label.textContent =
+      data.ads_filtered === 1 ? "post excluded as spam/ads" : "posts excluded as spam/ads";
+
+    container.appendChild(value);
+    container.appendChild(label);
+  }
+
   function buildSparkline(values) {
     const w = 300;
     const h = 40;
@@ -273,10 +350,30 @@
   // magnitude (velocity), so give these a fixed, small, non-competing size.
   const WATCHING_RADIUS = 7;
 
+  // Hubs carry a persistent radiating text label that satellites don't --
+  // clamping only the node's own radius to the canvas bounds still lets that
+  // label run past the SVG edge and get clipped. `n.labelWidth` (measured via
+  // getBBox() once the label is in the live DOM -- see renderFootprintGraph)
+  // gives an exact per-hub margin instead of guessing a single fixed number
+  // that's either too small for long labels or wasteful for short ones. Used
+  // as a uniform margin in both x and y since a label can radiate in any
+  // direction depending on the hub's position in the ring.
+  const FALLBACK_HUB_LABEL_MARGIN = 160;
+
+  function nodeMargin(n) {
+    if (n.type !== "hub") return n.r;
+    const labelReach = n.labelWidth != null ? n.labelWidth : FALLBACK_HUB_LABEL_MARGIN;
+    return n.r + 16 + labelReach;
+  }
+
+  function clampToBounds(value, margin, max) {
+    return Math.min(Math.max(value, margin), max - margin);
+  }
+
   function tickForceSimulation(nodes, edges, width, height) {
-    const repulsionStrength = 70;
+    const repulsionStrength = 90;
     const springStrength = 0.02;
-    const springLength = 55;
+    const springLength = 85;
     const centerStrength = 0.006;
     const damping = 0.85;
 
@@ -320,27 +417,49 @@
 
     let totalMovement = 0;
     nodes.forEach((n) => {
+      // A dragged (or drag-released) node is pinned -- it still pushes/pulls
+      // its neighbors via the forces above, but its own position is driven
+      // directly by the pointer, not physics.
+      if (n.fixed) {
+        n.vx = 0;
+        n.vy = 0;
+        return;
+      }
       n.vx *= damping;
       n.vy *= damping;
       n.x += n.vx;
       n.y += n.vy;
-      n.x = Math.min(Math.max(n.x, n.r), width - n.r);
-      n.y = Math.min(Math.max(n.y, n.r), height - n.r);
+      const margin = nodeMargin(n);
+      n.x = clampToBounds(n.x, margin, width);
+      n.y = clampToBounds(n.y, margin, height);
       totalMovement += Math.abs(n.vx) + Math.abs(n.vy);
     });
 
     return totalMovement;
   }
 
-  // The Footprint tab starts hidden (`display: none`), and a hidden container
-  // measures 0 width -- rendering while hidden would freeze the graph's layout
-  // to a wrong aspect ratio. So the data loads eagerly, but the actual SVG
-  // build is deferred until the tab is first shown and has a real width.
-  let footprintMembers = null;
-  let footprintRendered = false;
+  // Full fetched set (unfiltered) -- kept around so the legend/category chips
+  // can always offer every platform/category ever seen, even ones currently
+  // toggled off, and so toggling doesn't require a re-fetch.
+  let footprintAllMembers = [];
+  // null = show everything; a Set means "only these are visible."
+  let footprintPlatformFilter = null;
+  let footprintCategoryFilter = null;
+
+  const ALL_CATEGORIES = [
+    "api_abuse",
+    "product_bug",
+    "ux_confusion",
+    "messaging_gap",
+    "credential_theft",
+    "abuse",
+    "safety",
+    "other",
+  ];
 
   async function loadFootprintGraph() {
     const container = document.getElementById("footprint-graph");
+    const legend = document.getElementById("footprint-legend");
     try {
       const [alerts, watching] = await Promise.all([
         fetchJSON("/api/alerts"),
@@ -350,36 +469,166 @@
       // visible even before any single post has crossed the velocity threshold --
       // scored alerts and watching (not-yet-scored) pain points are visually
       // distinguished per-node, not filtered into separate graphs.
-      footprintMembers = [
+      footprintAllMembers = [
         ...alerts.map((a) => ({ ...a, status: "alert" })),
         ...watching.map((w) => ({ ...w, status: "watching" })),
       ];
-      renderFootprintGraphIfVisible();
+      renderFootprintPlatformFilter();
+      renderFootprintCategoryFilter();
+      applyFootprintFilters();
     } catch (err) {
       renderEmpty(container, "Failed to load the footprint graph.");
     }
   }
 
-  function renderFootprintGraphIfVisible() {
-    const panel = document.querySelector('.tab-panel[data-tab="footprint"]');
-    if (footprintRendered || !footprintMembers || !panel || panel.hidden) return;
+  function renderFootprintCategoryFilter() {
+    const container = document.getElementById("footprint-category-filter");
+    container.textContent = "";
+    const label = document.createElement("span");
+    label.className = "legend-group-label";
+    label.textContent = "Category:";
+    container.appendChild(label);
+    const categoriesPresent = ALL_CATEGORIES.filter((cat) =>
+      footprintAllMembers.some((m) => m.category === cat)
+    );
+    categoriesPresent.forEach((cat) => {
+      const chip = document.createElement("button");
+      chip.type = "button";
+      chip.className = "category-filter-chip";
+      const isActive = !footprintCategoryFilter || footprintCategoryFilter.has(cat);
+      chip.classList.toggle("is-active", isActive);
+      chip.textContent = formatCategory(cat);
+      chip.addEventListener("click", () => {
+        // Independent per-chip toggle, same model as the platform legend --
+        // starts from "everything on," each click hides/shows just that one
+        // category. Materializing the full set on the first click (rather
+        // than starting from an empty one) is what makes "toggle off" the
+        // correct first-click behavior instead of "toggle on."
+        if (!footprintCategoryFilter) {
+          footprintCategoryFilter = new Set(categoriesPresent);
+        }
+        if (footprintCategoryFilter.has(cat)) {
+          footprintCategoryFilter.delete(cat);
+        } else {
+          footprintCategoryFilter.add(cat);
+        }
+        if (footprintCategoryFilter.size === categoriesPresent.length) {
+          footprintCategoryFilter = null; // back to "everything on"
+        }
+        renderFootprintCategoryFilter();
+        applyFootprintFilters();
+      });
+      chip.title = `Isolate ${formatCategory(cat)}: double-click`;
+      chip.addEventListener("dblclick", (evt) => {
+        evt.preventDefault();
+        footprintCategoryFilter = new Set([cat]);
+        renderFootprintCategoryFilter();
+        applyFootprintFilters();
+      });
+      container.appendChild(chip);
+    });
+  }
+
+  // Lives in the filter row above the graph (not the legend below it) --
+  // it's an interactive control, not a color key, so it belongs with the
+  // category chips rather than split across both ends of the card.
+  function renderFootprintPlatformFilter() {
+    const container = document.getElementById("footprint-platform-filter");
+    container.textContent = "";
+    const label = document.createElement("span");
+    label.className = "legend-group-label";
+    label.textContent = "Platform:";
+    container.appendChild(label);
+
+    // Enumerated from the *full* unfiltered set, not whatever's currently
+    // visible -- otherwise toggling a platform off would make its own
+    // checkbox (and the only way to toggle it back on) disappear along with
+    // its nodes.
+    const platformsPresent = Array.from(
+      new Set(footprintAllMembers.map((m) => m.platform))
+    ).sort();
+    platformsPresent.forEach((p) => {
+      const item = document.createElement("label");
+      const shape = PLATFORM_SHAPE[p] || "circle";
+      const isActive = !footprintPlatformFilter || footprintPlatformFilter.has(p);
+      item.className =
+        "legend-item legend-item--toggle" + (isActive ? "" : " legend-item--inactive");
+
+      const checkbox = document.createElement("input");
+      checkbox.type = "checkbox";
+      checkbox.checked = isActive;
+      checkbox.className = "legend-checkbox";
+
+      const swatch = document.createElement("span");
+      swatch.className = "legend-swatch" + (shape !== "circle" ? ` legend-swatch--${shape}` : "");
+      swatch.style.background = `var(${PLATFORM_COLOR_VAR[p] || "--text-muted"})`;
+      const text = document.createElement("span");
+      // Only 4 hues are validated as mutually CVD-safe and non-red/orange/green
+      // (see dashboard.css); platforms beyond that share a hue and are
+      // shape-coded instead -- called out here so the checkbox explains why
+      // two entries can have the same color swatch.
+      text.textContent = (PLATFORM_LABEL[p] || p) + platformShapeSuffix(p);
+
+      item.appendChild(checkbox);
+      item.appendChild(swatch);
+      item.appendChild(text);
+      item.title = `Show only ${PLATFORM_LABEL[p] || p}: double-click`;
+
+      checkbox.addEventListener("change", () => {
+        if (!footprintPlatformFilter) {
+          footprintPlatformFilter = new Set(platformsPresent);
+        }
+        if (checkbox.checked) {
+          footprintPlatformFilter.add(p);
+        } else {
+          footprintPlatformFilter.delete(p);
+        }
+        if (footprintPlatformFilter.size === platformsPresent.length) {
+          footprintPlatformFilter = null;
+        }
+        renderFootprintPlatformFilter();
+        applyFootprintFilters();
+      });
+      // Double-click: "show only this one" -- e.g. "choose GitHub, only
+      // those are shown" -- without unchecking every other platform by hand.
+      item.addEventListener("dblclick", (evt) => {
+        evt.preventDefault();
+        footprintPlatformFilter = new Set([p]);
+        renderFootprintPlatformFilter();
+        applyFootprintFilters();
+      });
+      container.appendChild(item);
+    });
+  }
+
+  function applyFootprintFilters() {
     const container = document.getElementById("footprint-graph");
     const legend = document.getElementById("footprint-legend");
-    renderFootprintGraph(container, legend, footprintMembers);
-    footprintRendered = true;
+    const filtered = footprintAllMembers.filter((m) => {
+      if (footprintPlatformFilter && !footprintPlatformFilter.has(m.platform)) return false;
+      if (footprintCategoryFilter && !footprintCategoryFilter.has(m.category)) return false;
+      return true;
+    });
+    renderFootprintGraph(container, legend, filtered);
   }
 
   function renderFootprintGraph(container, legendContainer, members) {
     container.textContent = "";
     legendContainer.textContent = "";
+    const detailPanel = document.getElementById("footprint-detail");
+    detailPanel.textContent = "";
+    const detailHint = document.createElement("p");
+    detailHint.className = "empty-state";
+    detailHint.textContent = "Click a node for details. Drag any node to reposition it.";
+    detailPanel.appendChild(detailHint);
 
     if (!members.length) {
       renderEmpty(container, "No classified pain points yet -- run `radar classify` first.");
       return;
     }
 
-    const width = Math.max(container.clientWidth || 600, 300);
-    const height = 420;
+    const width = Math.max(container.clientWidth || 900, 300);
+    const height = 920;
 
     const clusters = new Map();
     members.forEach((m) => {
@@ -449,16 +698,164 @@
       return line;
     });
 
+    // Clicking a node populates `detailPanel` (declared above) with a
+    // persistent, readable detail card -- unlike the hover tooltip, it survives
+    // after the pointer moves away, and it's where a real platform name + "View
+    // post" link live instead of a raw post_id.
+    function buildSamePosterSection(matches) {
+      const section = document.createElement("div");
+      section.className = "same-poster-section";
+
+      const heading = document.createElement("h4");
+      heading.textContent = `Also posted by this poster (${matches.length})`;
+      section.appendChild(heading);
+
+      const list = document.createElement("ul");
+      list.className = "same-poster-list";
+      matches.forEach((other) => {
+        const m = other.member;
+        const li = document.createElement("li");
+        li.tabIndex = 0;
+
+        const label = document.createElement("span");
+        label.className = "same-poster-label";
+        label.textContent = `${PLATFORM_LABEL[m.platform] || m.platform} · ${formatCategory(m.category)}`;
+        li.appendChild(label);
+
+        const severity = document.createElement("span");
+        severity.className = "same-poster-severity";
+        severity.textContent = (SEVERITY_META[m.severity] || {}).label || m.severity;
+        li.appendChild(severity);
+
+        li.addEventListener("click", () => renderDetail(other));
+        li.addEventListener("keydown", (evt) => {
+          if (evt.key === "Enter" || evt.key === " ") {
+            evt.preventDefault();
+            renderDetail(other);
+          }
+        });
+
+        list.appendChild(li);
+      });
+      section.appendChild(list);
+      return section;
+    }
+
+    function renderDetail(n) {
+      // Same-poster rings are toggled per-selection, not per-node-creation --
+      // always clear before deciding whether to re-apply below.
+      nodes.forEach((o) => {
+        if (o.posterRingEl) o.posterRingEl.classList.remove("is-visible");
+      });
+
+      detailPanel.textContent = "";
+      const heading = document.createElement("h3");
+      const dl = document.createElement("dl");
+
+      function addRow(term, value) {
+        if (value === undefined || value === null || value === "") return;
+        const dt = document.createElement("dt");
+        dt.textContent = term;
+        const dd = document.createElement("dd");
+        dd.textContent = value;
+        dl.appendChild(dt);
+        dl.appendChild(dd);
+      }
+
+      let sameAuthorNodes = [];
+      if (n.type === "hub") {
+        heading.textContent = n.label;
+        addRow("Platforms", n.platformCount);
+        addRow("Posts", n.memberCount);
+        addRow(
+          "Status",
+          n.alertCount > 0
+            ? `⚠ ${n.alertCount} active alert${n.alertCount === 1 ? "" : "s"}`
+            : "No active alerts yet"
+        );
+      } else {
+        const m = n.member;
+        heading.textContent = PLATFORM_LABEL[m.platform] || m.platform;
+        addRow("Status", n.isAlert ? "Alert (scored)" : "Watching (not yet scored)");
+        addRow("Severity", (SEVERITY_META[m.severity] || {}).label || m.severity);
+        if (n.isAlert) {
+          addRow("Velocity", m.velocity.toFixed(1));
+        }
+        addRow("Category", formatCategory(m.category));
+        addRow("Matched term", m.matched_term);
+        addRow("Poster", m.author);
+        addRow("Posted", formatDate(m.created_at));
+        addRow("Engagement", formatEngagement(m));
+        addRow("Summary", m.issue_summary);
+
+        if (m.author) {
+          sameAuthorNodes = nodes.filter(
+            (other) => other.type === "satellite" && other !== n && other.member.author === m.author
+          );
+        }
+      }
+
+      detailPanel.appendChild(heading);
+      detailPanel.appendChild(dl);
+
+      if (n.type === "satellite" && n.member.url) {
+        const link = document.createElement("a");
+        link.href = n.member.url;
+        link.target = "_blank";
+        link.rel = "noopener noreferrer";
+        link.className = "post-link";
+        link.textContent = "View post ↗";
+        detailPanel.appendChild(link);
+      }
+
+      if (sameAuthorNodes.length) {
+        sameAuthorNodes.forEach((other) => other.posterRingEl && other.posterRingEl.classList.add("is-visible"));
+        detailPanel.appendChild(buildSamePosterSection(sameAuthorNodes));
+      }
+    }
+
+    // Converts a pointer event's client (viewport) coordinates into this SVG's
+    // own viewBox coordinate space -- needed because the element's rendered
+    // pixel size can differ from the viewBox units it's drawn in.
+    function toViewBoxPoint(clientX, clientY) {
+      const rect = svg.getBoundingClientRect();
+      return {
+        x: ((clientX - rect.left) / rect.width) * width,
+        y: ((clientY - rect.top) / rect.height) * height,
+      };
+    }
+
+    // Shared by the main node mark and its risk ring so both stay in sync --
+    // "circle" sets r; "square"/"diamond" are a rect of equivalent area,
+    // rotated 45deg for diamond (rect x/y is already centered at the node's
+    // local origin, so a rotate() around (0,0) is correct as-is).
+    function applyShapeGeometry(el, shape, radius) {
+      if (shape === "circle") {
+        el.setAttribute("r", radius);
+        return;
+      }
+      const side = radius * 1.7;
+      el.setAttribute("x", -side / 2);
+      el.setAttribute("y", -side / 2);
+      el.setAttribute("width", side);
+      el.setAttribute("height", side);
+      el.setAttribute("rx", 2);
+      if (shape === "diamond") {
+        el.setAttribute("transform", "rotate(45)");
+      }
+    }
+
     const nodeEls = nodes.map((n) => {
       const g = document.createElementNS(SVG_NS, "g");
       g.setAttribute("class", n.type === "hub" ? "graph-hub" : "graph-node");
 
-      const fill = document.createElementNS(SVG_NS, "circle");
+      const nodeShape = n.type === "satellite" ? PLATFORM_SHAPE[n.member.platform] || "circle" : "circle";
+      const fill = document.createElementNS(SVG_NS, nodeShape === "circle" ? "circle" : "rect");
       fill.setAttribute(
         "class",
         n.type === "hub" ? "hub-fill" + (n.alertCount > 0 ? " hub-fill--has-alert" : "") : "node-fill"
       );
-      fill.setAttribute("r", n.r);
+      applyShapeGeometry(fill, nodeShape, n.r);
       if (n.type === "satellite") {
         const colorVar = PLATFORM_COLOR_VAR[n.member.platform] || "--text-muted";
         if (n.isAlert) {
@@ -472,6 +869,38 @@
           fill.style.strokeWidth = "2";
         }
       }
+
+      // Risk outline: a second ring outside the platform-colored node,
+      // independent of the fill/stroke above -- so severity reads the same
+      // way on both solid (alert) and hollow (watching) nodes without
+      // fighting platform color for the same channel. Low severity gets no
+      // ring at all (nothing to flag); this is why the platform palette
+      // above was rebuilt to avoid red/orange -- a risk ring must never be
+      // mistakable for "that's just this platform's color."
+      if (n.type === "satellite" && n.member.severity && n.member.severity !== "low") {
+        const isHighRisk = n.member.severity === "high";
+        const riskRing = document.createElementNS(SVG_NS, nodeShape === "circle" ? "circle" : "rect");
+        riskRing.setAttribute(
+          "class",
+          "node-risk-ring" + (isHighRisk ? " node-risk-ring--high" : " node-risk-ring--med")
+        );
+        applyShapeGeometry(riskRing, nodeShape, n.r + 3);
+        g.appendChild(riskRing);
+      }
+
+      // Same-poster highlight: a dashed neutral-ink ring outside the risk
+      // ring so it never visually merges with it -- toggled on/off by
+      // renderDetail(), not recreated per click. Pattern + neutral color is
+      // orthogonal to both the platform-hue and risk-color channels, which
+      // are already fully committed and must stay legible alongside this.
+      if (n.type === "satellite") {
+        const posterRing = document.createElementNS(SVG_NS, nodeShape === "circle" ? "circle" : "rect");
+        posterRing.setAttribute("class", "node-poster-ring");
+        applyShapeGeometry(posterRing, nodeShape, n.r + 6);
+        g.appendChild(posterRing);
+        n.posterRingEl = posterRing;
+      }
+
       g.appendChild(fill);
 
       const hit = document.createElementNS(SVG_NS, "circle");
@@ -494,16 +923,18 @@
         } else {
           const m = n.member;
           const lines = [
-            ["Post", m.post_id],
             ["Platform", PLATFORM_LABEL[m.platform] || m.platform],
             ["Status", n.isAlert ? "Alert (scored)" : "Watching (not yet scored)"],
+            ["Severity", (SEVERITY_META[m.severity] || {}).label || m.severity],
           ];
           if (n.isAlert) {
             lines.push(["Velocity", m.velocity.toFixed(1)]);
-          } else {
-            lines.push(["Severity", (SEVERITY_META[m.severity] || {}).label || m.severity]);
           }
-          lines.push(["Category", formatCategory(m.category)], ["Summary", m.issue_summary]);
+          lines.push(
+            ["Category", formatCategory(m.category)],
+            ["Matched term", m.matched_term],
+            ["Summary", m.issue_summary]
+          );
           showTooltipForElement(g, lines);
         }
       };
@@ -511,6 +942,47 @@
       hit.addEventListener("focus", showTip);
       hit.addEventListener("mouseleave", hideTooltip);
       hit.addEventListener("blur", hideTooltip);
+
+      // Drag to reposition (stays pinned where dropped); a plain click (no
+      // movement) opens the persistent detail panel instead.
+      let drag = null;
+      const CLICK_MOVE_THRESHOLD = 4;
+
+      hit.addEventListener("pointerdown", (evt) => {
+        evt.preventDefault();
+        hit.setPointerCapture(evt.pointerId);
+        drag = { moved: false, startX: evt.clientX, startY: evt.clientY };
+        n.fixed = true;
+        g.classList.add("is-dragging");
+        wake();
+      });
+
+      hit.addEventListener("pointermove", (evt) => {
+        if (!drag) return;
+        if (
+          Math.abs(evt.clientX - drag.startX) > CLICK_MOVE_THRESHOLD ||
+          Math.abs(evt.clientY - drag.startY) > CLICK_MOVE_THRESHOLD
+        ) {
+          drag.moved = true;
+        }
+        const p = toViewBoxPoint(evt.clientX, evt.clientY);
+        const margin = nodeMargin(n);
+        n.x = clampToBounds(p.x, margin, width);
+        n.y = clampToBounds(p.y, margin, height);
+        draw();
+      });
+
+      const endDrag = () => {
+        if (!drag) return;
+        g.classList.remove("is-dragging");
+        if (!drag.moved) {
+          renderDetail(n);
+        }
+        drag = null;
+      };
+      hit.addEventListener("pointerup", endDrag);
+      hit.addEventListener("pointercancel", endDrag);
+
       g.appendChild(hit);
 
       if (n.type === "hub") {
@@ -522,6 +994,17 @@
 
       nodeGroup.appendChild(g);
       return g;
+    });
+
+    // Measured *after* every node is attached to the live SVG (getBBox()
+    // needs real layout) -- label strings vary a lot in length ("Safety —
+    // unknown" vs. "Credential theft — claude api general"), so a fixed
+    // guessed margin either clips the long ones or wastes space on the short
+    // ones. Each hub gets exactly the clearance its own label needs.
+    nodes.forEach((n) => {
+      if (n.type === "hub" && n.labelEl) {
+        n.labelWidth = n.labelEl.getBBox().width;
+      }
     });
 
     function draw() {
@@ -555,37 +1038,26 @@
 
     let ticks = 0;
     const maxTicks = 400;
+    let rafScheduled = false;
     function step() {
       const movement = tickForceSimulation(nodes, edges, width, height);
       draw();
       ticks += 1;
       if (movement > 0.5 && ticks < maxTicks) {
         requestAnimationFrame(step);
+      } else {
+        rafScheduled = false;
       }
     }
-    requestAnimationFrame(step);
-
-    const platformGroup = document.createElement("div");
-    platformGroup.className = "legend-group";
-    const platformGroupLabel = document.createElement("span");
-    platformGroupLabel.className = "legend-group-label";
-    platformGroupLabel.textContent = "Platform:";
-    platformGroup.appendChild(platformGroupLabel);
-
-    const platformsPresent = Array.from(new Set(members.map((m) => m.platform))).sort();
-    platformsPresent.forEach((p) => {
-      const item = document.createElement("span");
-      item.className = "legend-item";
-      const swatch = document.createElement("span");
-      swatch.className = "legend-swatch";
-      swatch.style.background = `var(${PLATFORM_COLOR_VAR[p] || "--text-muted"})`;
-      const text = document.createElement("span");
-      text.textContent = PLATFORM_LABEL[p] || p;
-      item.appendChild(swatch);
-      item.appendChild(text);
-      platformGroup.appendChild(item);
-    });
-    legendContainer.appendChild(platformGroup);
+    // Restarts the settle loop -- needed because it normally stops once the
+    // layout is still, and a drag can disturb an already-settled graph.
+    function wake() {
+      if (rafScheduled) return;
+      rafScheduled = true;
+      ticks = 0;
+      requestAnimationFrame(step);
+    }
+    wake();
 
     // Style key: solid vs. hollow means alert vs. watching, independent of platform --
     // grouped and labeled separately so the neutral swatch doesn't read as a platform color.
@@ -627,20 +1099,135 @@
     statusGroup.appendChild(hubAlertItem);
 
     legendContainer.appendChild(statusGroup);
+
+    // A ring around a satellite, independent of its platform color/fill --
+    // present only for med/high severity so a calm (low-severity) node stays
+    // uncluttered.
+    const riskGroup = document.createElement("div");
+    riskGroup.className = "legend-group";
+    const riskGroupLabel = document.createElement("span");
+    riskGroupLabel.className = "legend-group-label";
+    riskGroupLabel.textContent = "Risk:";
+    riskGroup.appendChild(riskGroupLabel);
+
+    [
+      { cls: "legend-swatch--risk-med", label: "Danger territory (med severity)" },
+      { cls: "legend-swatch--risk-high", label: "Full risk (high severity)" },
+    ].forEach(({ cls, label }) => {
+      const item = document.createElement("span");
+      item.className = "legend-item";
+      const swatch = document.createElement("span");
+      swatch.className = "legend-swatch legend-swatch--hollow " + cls;
+      const text = document.createElement("span");
+      text.textContent = label;
+      item.appendChild(swatch);
+      item.appendChild(text);
+      riskGroup.appendChild(item);
+    });
+    legendContainer.appendChild(riskGroup);
+  }
+
+  // -- sortable-table helpers (shared by Watching and Alerts) -----------------
+
+  const SEVERITY_RANK = { high: 3, med: 2, low: 1 };
+
+  function applySort(rows, sortState, accessors) {
+    if (!sortState.key) return rows;
+    const accessor = accessors[sortState.key];
+    if (!accessor) return rows;
+    return [...rows].sort((a, b) => {
+      const va = accessor(a);
+      const vb = accessor(b);
+      if (va < vb) return -1 * sortState.dir;
+      if (va > vb) return 1 * sortState.dir;
+      return 0;
+    });
+  }
+
+  function updateSortIndicators(containerSelector, sortState) {
+    document.querySelectorAll(containerSelector + " th[data-sort-key]").forEach((th) => {
+      const indicator = th.querySelector(".sort-indicator");
+      if (!indicator) return;
+      indicator.textContent =
+        th.dataset.sortKey === sortState.key ? (sortState.dir === 1 ? "▲" : "▼") : "";
+    });
+  }
+
+  // Headers are static markup (only <tbody> gets rebuilt per render), so this
+  // only needs to run once at init, not after every re-render.
+  function initSortableHeaders(containerSelector, sortState, onChange) {
+    document.querySelectorAll(containerSelector + " th[data-sort-key]").forEach((th) => {
+      th.tabIndex = 0;
+      const indicator = document.createElement("span");
+      indicator.className = "sort-indicator";
+      th.appendChild(indicator);
+
+      const activate = () => {
+        const key = th.dataset.sortKey;
+        if (sortState.key === key) {
+          sortState.dir *= -1;
+        } else {
+          sortState.key = key;
+          sortState.dir = 1;
+        }
+        updateSortIndicators(containerSelector, sortState);
+        onChange();
+      };
+      th.addEventListener("click", activate);
+      th.addEventListener("keydown", (evt) => {
+        if (evt.key === "Enter" || evt.key === " ") {
+          evt.preventDefault();
+          activate();
+        }
+      });
+    });
   }
 
   // -- watching (classified pain points with no alert yet) --------------------
 
+  const WATCHING_SORT_ACCESSORS = {
+    platform: (r) => (PLATFORM_LABEL[r.platform] || r.platform || "").toLowerCase(),
+    category: (r) => formatCategory(r.category).toLowerCase(),
+    severity: (r) => SEVERITY_RANK[r.severity] || 0,
+  };
+
+  let watchingAllRows = [];
+  const watchingSort = { key: null, dir: 1 };
+
+  function currentWatchingFilters() {
+    return {
+      platform: document.getElementById("filter-watching-platform").value,
+      category: document.getElementById("filter-watching-category").value,
+      severity: document.getElementById("filter-watching-severity").value,
+    };
+  }
+
+  // Filtering/sorting happens entirely client-side against the already-loaded
+  // set -- the Watching list is small enough (order of hundreds) that a
+  // dedicated filtered server query isn't worth the extra endpoint surface.
+  function applyWatchingView() {
+    const tbody = document.getElementById("watching-body");
+    const filters = currentWatchingFilters();
+    let rows = watchingAllRows.filter((r) => {
+      if (filters.platform && r.platform !== filters.platform) return false;
+      if (filters.category && r.category !== filters.category) return false;
+      if (filters.severity && r.severity !== filters.severity) return false;
+      return true;
+    });
+    rows = applySort(rows, watchingSort, WATCHING_SORT_ACCESSORS);
+    renderWatching(tbody, rows, watchingAllRows.length);
+  }
+
   async function loadWatching() {
     const tbody = document.getElementById("watching-body");
     try {
-      const rows = await fetchJSON("/api/watching");
-      renderWatching(tbody, rows);
+      watchingAllRows = await fetchJSON("/api/watching");
+      applyWatchingView();
     } catch (err) {
       tbody.textContent = "";
       const tr = document.createElement("tr");
       const td = document.createElement("td");
-      td.colSpan = 5;
+      td.colSpan = 9;
       td.className = "empty-state";
       td.textContent = "Failed to load.";
       tr.appendChild(td);
@@ -648,15 +1235,18 @@
     }
   }
 
-  function renderWatching(tbody, rows) {
+  function renderWatching(tbody, rows, totalCount) {
     const count = document.getElementById("watching-count");
-    count.textContent = `${rows.length} pain point${rows.length === 1 ? "" : "s"} classified, not yet scored`;
+    count.textContent =
+      totalCount === rows.length
+        ? `${rows.length} pain point${rows.length === 1 ? "" : "s"} classified, not yet scored`
+        : `${rows.length} of ${totalCount} pain points classified, not yet scored (filtered)`;
 
     tbody.textContent = "";
     if (!rows.length) {
       const tr = document.createElement("tr");
       const td = document.createElement("td");
-      td.colSpan = 5;
+      td.colSpan = 9;
       td.className = "empty-state";
       td.textContent = "Nothing waiting -- every classified pain point has either alerted or been ruled out.";
       tr.appendChild(td);
@@ -668,7 +1258,10 @@
       const tr = document.createElement("tr");
 
       const platformTd = document.createElement("td");
-      platformTd.textContent = row.platform || "—";
+      platformTd.textContent = PLATFORM_LABEL[row.platform] || row.platform || "—";
+
+      const matchedTermTd = document.createElement("td");
+      matchedTermTd.textContent = row.matched_term || "—";
 
       const categoryTd = document.createElement("td");
       categoryTd.textContent = formatCategory(row.category);
@@ -679,6 +1272,16 @@
       const summaryTd = document.createElement("td");
       summaryTd.className = "summary-cell";
       summaryTd.textContent = row.issue_summary;
+
+      const posterTd = document.createElement("td");
+      posterTd.className = "poster-cell";
+      posterTd.textContent = row.author || "—";
+
+      const postedTd = document.createElement("td");
+      postedTd.textContent = formatDate(row.created_at) || "—";
+
+      const engagementTd = document.createElement("td");
+      engagementTd.textContent = formatEngagement(row) || "—";
 
       const postTd = document.createElement("td");
       if (row.url) {
@@ -692,9 +1295,13 @@
       }
 
       tr.appendChild(platformTd);
+      tr.appendChild(matchedTermTd);
       tr.appendChild(categoryTd);
       tr.appendChild(severityTd);
       tr.appendChild(summaryTd);
+      tr.appendChild(posterTd);
+      tr.appendChild(postedTd);
+      tr.appendChild(engagementTd);
       tr.appendChild(postTd);
       tbody.appendChild(tr);
     });
@@ -702,12 +1309,34 @@
 
   // -- alerts table -----------------------------------------------------------
 
+  const ALERTS_SORT_ACCESSORS = {
+    platform: (r) => (PLATFORM_LABEL[r.platform] || r.platform || "").toLowerCase(),
+    category: (r) => formatCategory(r.category).toLowerCase(),
+    severity: (r) => SEVERITY_RANK[r.severity] || 0,
+    velocity: (r) => r.velocity,
+  };
+
+  let alertsAllRows = [];
+  const alertsSort = { key: null, dir: 1 };
+
   function currentFilters() {
     return {
       status: document.getElementById("filter-status").value,
       category: document.getElementById("filter-category").value,
       severity: document.getElementById("filter-severity").value,
+      platform: document.getElementById("filter-alerts-platform").value,
     };
+  }
+
+  // Status/category/severity are server-side filters (existing /api/alerts
+  // params); platform is applied client-side against the fetched set below,
+  // alongside sorting, without needing a new server-side query param.
+  function applyAlertsView() {
+    const tbody = document.getElementById("alerts-body");
+    const { platform } = currentFilters();
+    let rows = platform ? alertsAllRows.filter((a) => a.platform === platform) : alertsAllRows;
+    rows = applySort(rows, alertsSort, ALERTS_SORT_ACCESSORS);
+    renderAlerts(tbody, rows);
   }
 
   async function loadAlerts() {
@@ -721,13 +1350,13 @@
     if (filters.severity) params.set("severity", filters.severity);
 
     try {
-      const alerts = await fetchJSON("/api/alerts?" + params.toString());
-      renderAlerts(tbody, alerts);
+      alertsAllRows = await fetchJSON("/api/alerts?" + params.toString());
+      applyAlertsView();
     } catch (err) {
       tbody.textContent = "";
       const tr = document.createElement("tr");
       const td = document.createElement("td");
-      td.colSpan = 8;
+      td.colSpan = 12;
       td.className = "empty-state";
       td.textContent = "Failed to load alerts.";
       tr.appendChild(td);
@@ -743,7 +1372,7 @@
     if (!alerts.length) {
       const tr = document.createElement("tr");
       const td = document.createElement("td");
-      td.colSpan = 8;
+      td.colSpan = 12;
       td.className = "empty-state";
       td.textContent = "No alerts match these filters.";
       tr.appendChild(td);
@@ -755,7 +1384,10 @@
       const tr = document.createElement("tr");
 
       const platformTd = document.createElement("td");
-      platformTd.textContent = a.platform || "—";
+      platformTd.textContent = PLATFORM_LABEL[a.platform] || a.platform || "—";
+
+      const matchedTermTd = document.createElement("td");
+      matchedTermTd.textContent = a.matched_term || "—";
 
       const categoryTd = document.createElement("td");
       categoryTd.textContent = formatCategory(a.category);
@@ -773,6 +1405,16 @@
       const summaryTd = document.createElement("td");
       summaryTd.className = "summary-cell";
       summaryTd.textContent = a.issue_summary;
+
+      const posterTd = document.createElement("td");
+      posterTd.className = "poster-cell";
+      posterTd.textContent = a.author || "—";
+
+      const postedTd = document.createElement("td");
+      postedTd.textContent = formatDate(a.created_at) || "—";
+
+      const engagementTd = document.createElement("td");
+      engagementTd.textContent = formatEngagement(a) || "—";
 
       const postTd = document.createElement("td");
       if (a.url) {
@@ -806,11 +1448,15 @@
       }
 
       tr.appendChild(platformTd);
+      tr.appendChild(matchedTermTd);
       tr.appendChild(categoryTd);
       tr.appendChild(severityTd);
       tr.appendChild(velocityTd);
       tr.appendChild(qaTd);
       tr.appendChild(summaryTd);
+      tr.appendChild(posterTd);
+      tr.appendChild(postedTd);
+      tr.appendChild(engagementTd);
       tr.appendChild(postTd);
       tr.appendChild(actionsTd);
       tbody.appendChild(tr);
@@ -849,25 +1495,346 @@
         panels.forEach((panel) => {
           panel.hidden = panel.dataset.tab !== target;
         });
-
-        if (target === "footprint") {
-          renderFootprintGraphIfVisible();
-        }
       });
     });
+  }
+
+  // -- source picker + live "run collection" trigger --------------------------
+
+  function loadAllDashboardData() {
+    loadClusters();
+    loadLeadTime();
+    loadAdStats();
+    loadFootprintGraph();
+    loadWatching();
+    loadAlerts();
+  }
+
+  async function initSourcePicker() {
+    const container = document.getElementById("source-checkboxes");
+    let available = {};
+    try {
+      available = await fetchJSON("/api/sources");
+    } catch (err) {
+      // Fall back to "nothing pre-checked" -- the picker still works, it just
+      // can't pre-select what's already configured.
+    }
+
+    container.textContent = "";
+
+    REAL_SOURCES.forEach((key) => {
+      const label = document.createElement("label");
+      label.className = "source-checkbox";
+      const input = document.createElement("input");
+      input.type = "checkbox";
+      input.value = key;
+      input.checked = Boolean(available[key]);
+      label.appendChild(input);
+      const text = document.createElement("span");
+      text.textContent = PLATFORM_LABEL[key] || key;
+      label.appendChild(text);
+      container.appendChild(label);
+    });
+
+    // Cosmetic only -- disabled, never posted to /api/collect. The interview
+    // talking point: these would need partner-level API access to light up.
+    COMING_SOON_SOURCES.forEach(({ key, label: platformLabel }) => {
+      const label = document.createElement("label");
+      label.className = "source-checkbox source-checkbox--coming-soon";
+      label.title = "Requires partner API access";
+      const input = document.createElement("input");
+      input.type = "checkbox";
+      input.disabled = true;
+      label.appendChild(input);
+      const text = document.createElement("span");
+      text.textContent = platformLabel;
+      label.appendChild(text);
+      const badgeEl = document.createElement("span");
+      badgeEl.className = "coming-soon-badge";
+      badgeEl.textContent = "Coming soon";
+      label.appendChild(badgeEl);
+      container.appendChild(label);
+    });
+  }
+
+  function checkedRealSources() {
+    return Array.from(document.querySelectorAll("#source-checkboxes input[type=checkbox]:checked"))
+      .map((el) => el.value)
+      .filter(Boolean);
+  }
+
+  async function runCollection() {
+    const button = document.getElementById("run-collection-btn");
+    const status = document.getElementById("collection-status");
+    const sources = checkedRealSources();
+
+    if (!sources.length) {
+      status.textContent = "Select at least one source first.";
+      return;
+    }
+
+    button.disabled = true;
+    status.textContent = "Running… (a full pass across every search term can take a while against live APIs)";
+
+    // /api/collect runs synchronously against real, rate-limited external
+    // APIs -- with several search terms x sources, a live run can genuinely
+    // take minutes (politeness pacing + real retry/backoff), not just a
+    // couple seconds. Rather than leave the button looking frozen with no
+    // feedback, give up waiting client-side after a while; the server keeps
+    // working regardless (this only stops the browser from waiting on it),
+    // so the data still lands -- refreshing the tabs later will show it.
+    const COLLECT_CLIENT_TIMEOUT_MS = 45000;
+    const abortController = new AbortController();
+    const timeoutId = setTimeout(() => abortController.abort(), COLLECT_CLIENT_TIMEOUT_MS);
+
+    try {
+      const res = await fetch("/api/collect", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ sources }),
+        signal: abortController.signal,
+      });
+      clearTimeout(timeoutId);
+      if (!res.ok) throw new Error("collect request failed");
+      const result = await res.json();
+
+      const succeeded = result.sources_run.filter((s) => !result.sources_failed.includes(s));
+      const label = (s) => PLATFORM_LABEL[s] || s;
+
+      const parts = [`Collected ${result.snapshots_written} new snapshot row${result.snapshots_written === 1 ? "" : "s"}.`];
+      if (succeeded.length) {
+        parts.push(`Ran: ${succeeded.map(label).join(", ")}.`);
+      }
+      if (result.sources_skipped_unconfigured.length) {
+        parts.push(`Skipped (not configured): ${result.sources_skipped_unconfigured.map(label).join(", ")}.`);
+      }
+      if (result.sources_failed.length) {
+        // A live source can fail (timeout, rate limit) independently of the
+        // others -- this is reported, not hidden, rather than surfacing as a
+        // generic request failure.
+        parts.push(`Failed (see server logs): ${result.sources_failed.map(label).join(", ")}.`);
+      }
+      status.textContent = parts.join(" ");
+
+      loadAllDashboardData();
+    } catch (err) {
+      clearTimeout(timeoutId);
+      if (err.name === "AbortError") {
+        status.textContent =
+          "Still running on the server after 45s (live APIs, several search terms) -- " +
+          "it'll finish on its own; refresh the tabs in a bit to see the new data.";
+      } else {
+        status.textContent = "Collection failed -- check server logs.";
+      }
+    } finally {
+      button.disabled = false;
+    }
+  }
+
+  // -- watchlist editor (Settings tab: terms / clients / risk patterns) -------
+
+  // Reusable editable tag-list: `items` is mutated in place (splice/push) so
+  // the caller's array reference stays the single source of truth across
+  // re-renders, rather than this component owning its own copy of the state.
+  function renderChipList(containerId, items, { max, placeholder, onChange }) {
+    const container = document.getElementById(containerId);
+    container.textContent = "";
+
+    const list = document.createElement("div");
+    list.className = "chip-list";
+    items.forEach((item, idx) => {
+      const chip = document.createElement("span");
+      chip.className = "chip";
+      const text = document.createElement("span");
+      text.textContent = item;
+      const removeBtn = document.createElement("button");
+      removeBtn.type = "button";
+      removeBtn.className = "chip-remove";
+      removeBtn.textContent = "×";
+      removeBtn.setAttribute("aria-label", `Remove ${item}`);
+      removeBtn.addEventListener("click", () => {
+        items.splice(idx, 1);
+        onChange();
+      });
+      chip.appendChild(text);
+      chip.appendChild(removeBtn);
+      list.appendChild(chip);
+    });
+    container.appendChild(list);
+
+    const addRow = document.createElement("div");
+    addRow.className = "chip-add-row";
+    const input = document.createElement("input");
+    input.type = "text";
+    input.placeholder = placeholder;
+    input.maxLength = 80;
+    const addBtn = document.createElement("button");
+    addBtn.type = "button";
+    addBtn.textContent = "Add";
+    const atMax = items.length >= max;
+    input.disabled = atMax;
+    addBtn.disabled = atMax;
+
+    const doAdd = () => {
+      const value = input.value.trim();
+      if (!value || items.length >= max) return;
+      if (items.some((existing) => existing.toLowerCase() === value.toLowerCase())) {
+        input.value = "";
+        return;
+      }
+      items.push(value);
+      input.value = "";
+      onChange();
+    };
+    addBtn.addEventListener("click", doAdd);
+    input.addEventListener("keydown", (evt) => {
+      if (evt.key === "Enter") {
+        evt.preventDefault();
+        doAdd();
+      }
+    });
+    addRow.appendChild(input);
+    addRow.appendChild(addBtn);
+    container.appendChild(addRow);
+
+    const counter = document.createElement("p");
+    counter.className = "chip-counter";
+    counter.textContent = `${items.length} / ${max}`;
+    container.appendChild(counter);
+  }
+
+  let watchlistMaxItems = 10;
+  let editTerms = [];
+  let editClients = [];
+  let editRiskPatterns = [];
+
+  // Pure client-side mirror of radar/config.py's effective_terms() -- used
+  // for the live preview before saving, so editing doesn't need a round trip
+  // to the server on every keystroke.
+  function computeEffectiveTerms(terms, clients, riskPatterns) {
+    const combined = [...terms];
+    clients.forEach((client) => {
+      riskPatterns.forEach((pattern) => {
+        combined.push(`${client} ${pattern}`);
+      });
+    });
+    return combined;
+  }
+
+  function updateEffectivePreview() {
+    const preview = document.getElementById("effective-terms-preview");
+    preview.textContent = "";
+    const combined = computeEffectiveTerms(editTerms, editClients, editRiskPatterns);
+    if (!combined.length) {
+      const empty = document.createElement("p");
+      empty.className = "empty-state";
+      empty.textContent = "No terms configured -- collection would have nothing to search.";
+      preview.appendChild(empty);
+      return;
+    }
+    combined.forEach((term, idx) => {
+      const chip = document.createElement("span");
+      const isClientScoped = idx >= editTerms.length;
+      chip.className = "chip" + (isClientScoped ? " chip--client-scoped" : "");
+      chip.textContent = term;
+      preview.appendChild(chip);
+    });
+    const count = document.createElement("p");
+    count.className = "chip-counter";
+    count.textContent = `${combined.length} effective quer${combined.length === 1 ? "y" : "ies"}`;
+    preview.appendChild(count);
+  }
+
+  function renderWatchlistEditors() {
+    renderChipList("terms-chip-list", editTerms, {
+      max: watchlistMaxItems,
+      placeholder: "e.g. claude rate limit",
+      onChange: () => {
+        renderWatchlistEditors();
+        updateEffectivePreview();
+      },
+    });
+    renderChipList("clients-chip-list", editClients, {
+      max: watchlistMaxItems,
+      placeholder: "e.g. McDonald's",
+      onChange: () => {
+        renderWatchlistEditors();
+        updateEffectivePreview();
+      },
+    });
+    renderChipList("risk-patterns-chip-list", editRiskPatterns, {
+      max: watchlistMaxItems,
+      placeholder: "e.g. jailbreak",
+      onChange: () => {
+        renderWatchlistEditors();
+        updateEffectivePreview();
+      },
+    });
+  }
+
+  async function initSettingsTab() {
+    try {
+      const data = await fetchJSON("/api/search-terms");
+      watchlistMaxItems = data.max_items || 10;
+      editTerms = [...data.terms];
+      editClients = [...data.clients];
+      editRiskPatterns = [...data.risk_patterns];
+      renderWatchlistEditors();
+      updateEffectivePreview();
+    } catch (err) {
+      document.getElementById("terms-chip-list").textContent = "Failed to load search terms.";
+    }
+  }
+
+  async function saveWatchlist() {
+    const button = document.getElementById("save-watchlist-btn");
+    const status = document.getElementById("watchlist-status");
+    button.disabled = true;
+    status.textContent = "Saving…";
+    try {
+      const res = await fetch("/api/search-terms", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          terms: editTerms,
+          clients: editClients,
+          risk_patterns: editRiskPatterns,
+        }),
+      });
+      if (!res.ok) throw new Error("save failed");
+      const data = await res.json();
+      editTerms = [...data.terms];
+      editClients = [...data.clients];
+      editRiskPatterns = [...data.risk_patterns];
+      renderWatchlistEditors();
+      updateEffectivePreview();
+      status.textContent = "Saved -- radar collect (CLI) will use this watchlist too.";
+    } catch (err) {
+      status.textContent = "Failed to save -- check server logs.";
+    } finally {
+      button.disabled = false;
+    }
   }
 
   // -- init -------------------------------------------------------------------
 
   initTabs();
+  initSourcePicker();
+  initSettingsTab();
+  document.getElementById("save-watchlist-btn").addEventListener("click", saveWatchlist);
+  document.getElementById("run-collection-btn").addEventListener("click", runCollection);
 
   document.getElementById("filter-status").addEventListener("change", loadAlerts);
   document.getElementById("filter-category").addEventListener("change", loadAlerts);
   document.getElementById("filter-severity").addEventListener("change", loadAlerts);
+  document.getElementById("filter-alerts-platform").addEventListener("change", applyAlertsView);
 
-  loadClusters();
-  loadLeadTime();
-  loadFootprintGraph();
-  loadWatching();
-  loadAlerts();
+  document.getElementById("filter-watching-platform").addEventListener("change", applyWatchingView);
+  document.getElementById("filter-watching-category").addEventListener("change", applyWatchingView);
+  document.getElementById("filter-watching-severity").addEventListener("change", applyWatchingView);
+
+  initSortableHeaders("#tab-watching table", watchingSort, applyWatchingView);
+  initSortableHeaders("#tab-alerts table", alertsSort, applyAlertsView);
+
+  loadAllDashboardData();
 })();
