@@ -798,14 +798,31 @@
       detailPanel.appendChild(heading);
       detailPanel.appendChild(dl);
 
-      if (n.type === "satellite" && n.member.url) {
-        const link = document.createElement("a");
-        link.href = n.member.url;
-        link.target = "_blank";
-        link.rel = "noopener noreferrer";
-        link.className = "post-link";
-        link.textContent = "View post ↗";
-        detailPanel.appendChild(link);
+      if (n.type === "satellite" && (n.member.url || n.member.post_id)) {
+        const actions = document.createElement("div");
+        actions.className = "detail-actions";
+
+        if (n.member.url) {
+          const link = document.createElement("a");
+          link.href = n.member.url;
+          link.target = "_blank";
+          link.rel = "noopener noreferrer";
+          link.className = "post-link";
+          link.textContent = "View post ↗";
+          actions.appendChild(link);
+        }
+
+        if (n.member.post_id) {
+          const destTab = n.isAlert ? "alerts" : "watching";
+          const jumpBtn = document.createElement("button");
+          jumpBtn.type = "button";
+          jumpBtn.className = "detail-jump-link";
+          jumpBtn.textContent = n.isAlert ? "View in Alerts tab →" : "View in Watching tab →";
+          jumpBtn.addEventListener("click", () => focusPostInTable(destTab, n.member.post_id));
+          actions.appendChild(jumpBtn);
+        }
+
+        detailPanel.appendChild(actions);
       }
 
       if (sameAuthorNodes.length) {
@@ -1256,6 +1273,7 @@
 
     rows.forEach((row) => {
       const tr = document.createElement("tr");
+      tr.dataset.postId = row.post_id;
 
       const platformTd = document.createElement("td");
       platformTd.textContent = PLATFORM_LABEL[row.platform] || row.platform || "—";
@@ -1382,6 +1400,7 @@
 
     alerts.forEach((a) => {
       const tr = document.createElement("tr");
+      tr.dataset.postId = a.post_id;
 
       const platformTd = document.createElement("td");
       platformTd.textContent = PLATFORM_LABEL[a.platform] || a.platform || "—";
@@ -1479,23 +1498,55 @@
 
   // -- tabs -------------------------------------------------------------------
 
+  // Shared by tab-button clicks and by code that needs to jump the user to a
+  // specific tab programmatically (e.g. "view this post in the Watching tab"
+  // from the footprint graph's detail panel).
+  function activateTab(target) {
+    document.querySelectorAll(".tab-button").forEach((b) => {
+      const active = b.dataset.tab === target;
+      b.classList.toggle("is-active", active);
+      b.setAttribute("aria-selected", String(active));
+    });
+    document.querySelectorAll(".tab-panel").forEach((panel) => {
+      panel.hidden = panel.dataset.tab !== target;
+    });
+  }
+
   function initTabs() {
-    const buttons = Array.from(document.querySelectorAll(".tab-button"));
-    const panels = Array.from(document.querySelectorAll(".tab-panel"));
+    document.querySelectorAll(".tab-button").forEach((button) => {
+      button.addEventListener("click", () => activateTab(button.dataset.tab));
+    });
+  }
 
-    buttons.forEach((button) => {
-      button.addEventListener("click", () => {
-        const target = button.dataset.tab;
+  // Jumps to a post's row inside the Watching or Alerts tab -- used by the
+  // footprint graph's detail panel so a node click can lead to the same
+  // post's full row context (filters, poster, actions) instead of just the
+  // compact graph tooltip. Clears that tab's filters first since a stale
+  // filter could otherwise hide the very row we're trying to reveal.
+  function focusPostInTable(tab, postId) {
+    if (tab === "watching") {
+      document.getElementById("filter-watching-platform").value = "";
+      document.getElementById("filter-watching-category").value = "";
+      document.getElementById("filter-watching-severity").value = "";
+      applyWatchingView();
+    } else {
+      document.getElementById("filter-status").value = "";
+      document.getElementById("filter-category").value = "";
+      document.getElementById("filter-severity").value = "";
+      document.getElementById("filter-alerts-platform").value = "";
+      applyAlertsView();
+    }
+    activateTab(tab);
 
-        buttons.forEach((b) => {
-          const active = b === button;
-          b.classList.toggle("is-active", active);
-          b.setAttribute("aria-selected", String(active));
-        });
-        panels.forEach((panel) => {
-          panel.hidden = panel.dataset.tab !== target;
-        });
-      });
+    requestAnimationFrame(() => {
+      const tbody = document.getElementById(tab === "watching" ? "watching-body" : "alerts-body");
+      const row = tbody.querySelector(`tr[data-post-id="${CSS.escape(postId)}"]`);
+      if (!row) return;
+      row.scrollIntoView({ behavior: "smooth", block: "center" });
+      row.classList.add("row-highlight");
+      // Hold at full strength long enough to actually be seen, then let the
+      // 1.2s background-color transition (see dashboard.css) fade it out.
+      setTimeout(() => row.classList.remove("row-highlight"), 1600);
     });
   }
 

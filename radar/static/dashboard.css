@@ -933,6 +933,37 @@ a.post-link:hover {
   text-decoration: underline;
 }
 
+.detail-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  align-items: center;
+  margin-top: 4px;
+}
+
+button.detail-jump-link {
+  font: inherit;
+  font-size: 12px;
+  padding: 0;
+  border: none;
+  background: none;
+  color: var(--series-1);
+  text-decoration: none;
+  cursor: pointer;
+}
+
+button.detail-jump-link:hover {
+  text-decoration: underline;
+}
+
+tbody tr {
+  transition: background-color 1.2s ease;
+}
+
+.row-highlight {
+  background: color-mix(in srgb, var(--series-1) 22%, transparent);
+}
+
 /* -- tooltip -- */
 
 #chart-tooltip {
