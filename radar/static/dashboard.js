@@ -133,6 +133,15 @@
     return parts.join(" · ");
   }
 
+  // Poster identifiers are sometimes long (a legacy hash from before
+  // HASH_AUTHORS was disabled, or just a long platform user ID) -- truncate
+  // for display rather than let it wrap across several lines, but keep the
+  // full value reachable via the caller's title/tooltip.
+  function truncateForDisplay(value, max) {
+    if (!value || value.length <= max) return value;
+    return value.slice(0, max) + "…";
+  }
+
   function formatMinutes(seconds) {
     const minutes = seconds / 60;
     if (minutes < 60) return minutes.toFixed(1) + " min";
@@ -752,12 +761,13 @@
       const heading = document.createElement("h3");
       const dl = document.createElement("dl");
 
-      function addRow(term, value) {
+      function addRow(term, value, fullTitle) {
         if (value === undefined || value === null || value === "") return;
         const dt = document.createElement("dt");
         dt.textContent = term;
         const dd = document.createElement("dd");
         dd.textContent = value;
+        if (fullTitle) dd.title = fullTitle;
         dl.appendChild(dt);
         dl.appendChild(dd);
       }
@@ -783,7 +793,7 @@
         }
         addRow("Category", formatCategory(m.category));
         addRow("Matched term", m.matched_term);
-        addRow("Poster", m.author);
+        addRow("Poster", truncateForDisplay(m.author, 32), m.author);
         addRow("Posted", formatDate(m.created_at));
         addRow("Engagement", formatEngagement(m));
         addRow("Summary", m.issue_summary);
@@ -1020,9 +1030,81 @@
     // ones. Each hub gets exactly the clearance its own label needs.
     nodes.forEach((n) => {
       if (n.type === "hub" && n.labelEl) {
-        n.labelWidth = n.labelEl.getBBox().width;
+        const bbox = n.labelEl.getBBox();
+        n.labelWidth = bbox.width;
+        n.labelHeight = bbox.height;
       }
     });
+
+    const hubNodes = nodes.filter((n) => n.type === "hub" && n.labelEl);
+
+    // A label's natural resting spot: radiating straight outward from the
+    // graph center (rather than a fixed direction) so labels fan out instead
+    // of all colliding in the middle of a ring of hubs. This is a *target*,
+    // not the final position -- separateLabels() below nudges labels away
+    // from this spot only when another label is actually crowding it.
+    function idealLabelOffset(n) {
+      const dx = n.x - width / 2;
+      const dy = n.y - height / 2;
+      const dist = Math.max(Math.sqrt(dx * dx + dy * dy), 1);
+      const ux = dx / dist;
+      const uy = dy / dist;
+      const labelDist = n.r + 16;
+      return { x: ux * labelDist, y: uy * labelDist, ux };
+    }
+
+    // Keeps every hub's label readable even when hubs themselves sit close
+    // together: each label springs back toward its natural radiate-out spot,
+    // but a small pairwise repulsion pushes apart any two labels whose text
+    // boxes actually overlap -- the same "repel, then spring back" shape as
+    // the node physics above, just scoped to text boxes instead of circles.
+    function separateLabels() {
+      const pullStrength = 0.12;
+      const padding = 4;
+
+      hubNodes.forEach((n) => {
+        const target = idealLabelOffset(n);
+        if (n.labelOffsetX == null) {
+          n.labelOffsetX = target.x;
+          n.labelOffsetY = target.y;
+        }
+        n.labelOffsetX += (target.x - n.labelOffsetX) * pullStrength;
+        n.labelOffsetY += (target.y - n.labelOffsetY) * pullStrength;
+        n.labelTextAnchorUx = target.ux;
+      });
+
+      for (let a = 0; a < hubNodes.length; a++) {
+        for (let b = a + 1; b < hubNodes.length; b++) {
+          const na = hubNodes[a];
+          const nb = hubNodes[b];
+          const ax = na.x + na.labelOffsetX;
+          const ay = na.y + na.labelOffsetY;
+          const bx = nb.x + nb.labelOffsetX;
+          const by = nb.y + nb.labelOffsetY;
+          const halfWidthA = (na.labelWidth || 0) / 2 + padding;
+          const halfWidthB = (nb.labelWidth || 0) / 2 + padding;
+          const halfHeightA = (na.labelHeight || 14) / 2;
+          const halfHeightB = (nb.labelHeight || 14) / 2;
+          const dx = bx - ax;
+          const dy = by - ay;
+          const overlapX = halfWidthA + halfWidthB - Math.abs(dx);
+          const overlapY = halfHeightA + halfHeightB - Math.abs(dy);
+          if (overlapX > 0 && overlapY > 0) {
+            // Push apart along whichever axis has the smaller overlap --
+            // the minimum-translation direction that resolves the collision.
+            if (overlapX < overlapY) {
+              const push = (overlapX / 2) * (dx >= 0 ? 1 : -1);
+              na.labelOffsetX -= push;
+              nb.labelOffsetX += push;
+            } else {
+              const push = (overlapY / 2) * (dy >= 0 ? 1 : -1);
+              na.labelOffsetY -= push;
+              nb.labelOffsetY += push;
+            }
+          }
+        }
+      }
+    }
 
     function draw() {
       edges.forEach((e, i) => {
@@ -1033,21 +1115,16 @@
       });
       nodes.forEach((n, i) => {
         nodeEls[i].setAttribute("transform", `translate(${n.x}, ${n.y})`);
-        if (n.labelEl) {
-          // Radiate the label outward from the graph center (rather than a
-          // fixed direction) so labels fan out instead of colliding in the
-          // middle of a ring of hubs.
-          const dx = n.x - width / 2;
-          const dy = n.y - height / 2;
-          const dist = Math.max(Math.sqrt(dx * dx + dy * dy), 1);
-          const ux = dx / dist;
-          const uy = dy / dist;
-          const labelDist = n.r + 16;
-          n.labelEl.setAttribute("x", ux * labelDist);
-          n.labelEl.setAttribute("y", uy * labelDist);
-          n.labelEl.setAttribute("text-anchor", ux >= 0.15 ? "start" : ux <= -0.15 ? "end" : "middle");
-          n.labelEl.setAttribute("dominant-baseline", "middle");
-        }
+      });
+      separateLabels();
+      hubNodes.forEach((n) => {
+        n.labelEl.setAttribute("x", n.labelOffsetX);
+        n.labelEl.setAttribute("y", n.labelOffsetY);
+        n.labelEl.setAttribute(
+          "text-anchor",
+          n.labelTextAnchorUx >= 0.15 ? "start" : n.labelTextAnchorUx <= -0.15 ? "end" : "middle"
+        );
+        n.labelEl.setAttribute("dominant-baseline", "middle");
       });
     }
 
@@ -1293,7 +1370,8 @@
 
       const posterTd = document.createElement("td");
       posterTd.className = "poster-cell";
-      posterTd.textContent = row.author || "—";
+      posterTd.textContent = truncateForDisplay(row.author, 24) || "—";
+      if (row.author) posterTd.title = row.author;
 
       const postedTd = document.createElement("td");
       postedTd.textContent = formatDate(row.created_at) || "—";
@@ -1427,7 +1505,8 @@
 
       const posterTd = document.createElement("td");
       posterTd.className = "poster-cell";
-      posterTd.textContent = a.author || "—";
+      posterTd.textContent = truncateForDisplay(a.author, 24) || "—";
+      if (a.author) posterTd.title = a.author;
 
       const postedTd = document.createElement("td");
       postedTd.textContent = formatDate(a.created_at) || "—";

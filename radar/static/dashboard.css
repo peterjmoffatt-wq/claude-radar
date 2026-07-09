@@ -504,6 +504,10 @@ button.run-collection:disabled {
 .footprint-layout #footprint-graph {
   flex: 1 1 auto;
   min-width: 0;
+  max-height: 640px;
+  overflow-y: auto;
+  overflow-x: hidden;
+  overscroll-behavior: contain;
 }
 
 .footprint-detail {
@@ -732,6 +736,8 @@ button.run-collection:disabled {
 .graph-hub text {
   fill: var(--text-secondary);
   font-size: 10px;
+  pointer-events: none;
+  user-select: none;
 }
 
 .graph-node circle.node-fill,
@@ -870,7 +876,9 @@ tr.is-loading {
 
 .poster-cell {
   max-width: 160px;
-  overflow-wrap: anywhere;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .badge {
