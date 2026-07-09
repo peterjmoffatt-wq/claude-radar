@@ -9,7 +9,7 @@ from radar.hashing import hash_author
 from radar.models import Classification, RawPost
 from radar.virality import virality_score
 
-SCHEMA_VERSION = "4"
+SCHEMA_VERSION = "5"
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS snapshots (
@@ -50,14 +50,22 @@ CREATE TABLE IF NOT EXISTS classifications (
 );
 
 CREATE TABLE IF NOT EXISTS alerts (
-    id                INTEGER PRIMARY KEY AUTOINCREMENT,
-    post_id           TEXT NOT NULL,
-    triggered_at      TEXT NOT NULL,
-    virality_score    REAL NOT NULL,
-    velocity          REAL NOT NULL,
-    category          TEXT NOT NULL,
-    severity          TEXT NOT NULL,
-    qa_status         TEXT NOT NULL
+    id                            INTEGER PRIMARY KEY AUTOINCREMENT,
+    post_id                       TEXT NOT NULL,
+    triggered_at                  TEXT NOT NULL,
+    virality_score                REAL NOT NULL,
+    velocity                      REAL NOT NULL,
+    category                      TEXT NOT NULL,
+    severity                      TEXT NOT NULL,
+    qa_status                     TEXT NOT NULL,
+    -- Independent of qa_status: qa_status gates whether the classification
+    -- itself is legitimate, incident_status tracks whether someone is
+    -- actually working the incident. See radar/db.py's transition_incident().
+    incident_status               TEXT NOT NULL DEFAULT 'open',
+    exec_brief                    TEXT,
+    exec_brief_generated_at       TEXT,
+    incident_report               TEXT,
+    incident_report_generated_at  TEXT
 );
 
 CREATE INDEX IF NOT EXISTS idx_alerts_post_id ON alerts(post_id);
@@ -72,6 +80,28 @@ CREATE TABLE IF NOT EXISTS classification_attempts (
     post_id         TEXT PRIMARY KEY,
     attempts        INTEGER NOT NULL DEFAULT 0,
     last_failed_at  TEXT
+);
+
+-- Append-only timeline for one alert's incident lifecycle -- also exactly the
+-- data a post-incident report needs (radar/brief.py's generate_incident_report).
+CREATE TABLE IF NOT EXISTS incident_events (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    alert_id     INTEGER NOT NULL,
+    from_status  TEXT NOT NULL,
+    to_status    TEXT NOT NULL,
+    note         TEXT,
+    created_at   TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_incident_events_alert_id ON incident_events(alert_id);
+
+-- Clusters aren't otherwise persisted (get_clusters() computes them fresh per
+-- request) -- this just caches a generated exec brief per cluster_key so it
+-- isn't silently re-billed/regenerated on every page load.
+CREATE TABLE IF NOT EXISTS cluster_briefs (
+    cluster_key   TEXT PRIMARY KEY,
+    brief         TEXT NOT NULL,
+    generated_at  TEXT NOT NULL
 );
 """
 
@@ -104,6 +134,18 @@ def _migrate(conn: sqlite3.Connection) -> None:
         conn.execute(
             "ALTER TABLE classifications ADD COLUMN is_advertisement INTEGER NOT NULL DEFAULT 0"
         )
+
+    alerts_columns = {row[1] for row in conn.execute("PRAGMA table_info(alerts)").fetchall()}
+    if "incident_status" not in alerts_columns:
+        conn.execute("ALTER TABLE alerts ADD COLUMN incident_status TEXT NOT NULL DEFAULT 'open'")
+    if "exec_brief" not in alerts_columns:
+        conn.execute("ALTER TABLE alerts ADD COLUMN exec_brief TEXT")
+    if "exec_brief_generated_at" not in alerts_columns:
+        conn.execute("ALTER TABLE alerts ADD COLUMN exec_brief_generated_at TEXT")
+    if "incident_report" not in alerts_columns:
+        conn.execute("ALTER TABLE alerts ADD COLUMN incident_report TEXT")
+    if "incident_report_generated_at" not in alerts_columns:
+        conn.execute("ALTER TABLE alerts ADD COLUMN incident_report_generated_at TEXT")
 
 
 def init_db(conn: sqlite3.Connection) -> None:
@@ -356,6 +398,7 @@ def get_alerts(
     status: str | None = None,
     category: str | None = None,
     severity: str | None = None,
+    post_id: str | None = None,
 ) -> list[tuple]:
     """Each post's latest alert -- for the dashboard's filterable alert list --
     joined with its classification and most recent snapshot's url/platform/
@@ -365,7 +408,9 @@ def get_alerts(
         SELECT a.post_id, a.category, a.severity, a.velocity, a.virality_score,
                a.qa_status, a.triggered_at, c.issue_summary, c.model_implicated,
                ls.url, ls.platform, ls.matched_term,
-               ls.hashed_author, ls.likes, ls.comments, ls.score, ls.shares, ls.created_at
+               ls.hashed_author, ls.likes, ls.comments, ls.score, ls.shares, ls.created_at,
+               a.incident_status, a.exec_brief, a.exec_brief_generated_at,
+               a.incident_report, a.incident_report_generated_at
         FROM alerts a
         JOIN classifications c ON c.post_id = a.post_id
         JOIN (
@@ -393,6 +438,9 @@ def get_alerts(
     if severity:
         query += " AND a.severity = ?"
         params.append(severity)
+    if post_id:
+        query += " AND a.post_id = ?"
+        params.append(post_id)
     query += " ORDER BY a.triggered_at DESC"
 
     return conn.execute(query, params).fetchall()
@@ -473,13 +521,27 @@ def get_last_collected_at(conn: sqlite3.Connection) -> datetime | None:
 
 def get_alerts_for_clustering(
     conn: sqlite3.Connection,
-) -> list[tuple[str, str, str, str, str]]:
-    """(category, model_implicated, severity, issue_summary, triggered_at) for every alert."""
+) -> list[tuple[str, str, str, str, str, str]]:
+    """(category, model_implicated, severity, issue_summary, triggered_at, platform)
+    for every alert -- platform comes from each post's most recent snapshot, needed
+    so a cluster's exec brief can name which platforms it's actually spreading
+    across (see radar/cluster.py's ClusterSummary.platforms).
+    """
     return conn.execute(
         """
-        SELECT a.category, c.model_implicated, a.severity, c.issue_summary, a.triggered_at
+        SELECT a.category, c.model_implicated, a.severity, c.issue_summary, a.triggered_at,
+               ls.platform
         FROM alerts a
         JOIN classifications c ON c.post_id = a.post_id
+        JOIN (
+            SELECT s.post_id, s.platform
+            FROM snapshots s
+            WHERE s.id = (
+                SELECT s2.id FROM snapshots s2
+                WHERE s2.post_id = s.post_id
+                ORDER BY s2.collected_at DESC, s2.id DESC LIMIT 1
+            )
+        ) ls ON ls.post_id = a.post_id
         """
     ).fetchall()
 
@@ -507,5 +569,109 @@ def write_alert(
             severity,
             qa_status,
         ),
+    )
+    conn.commit()
+
+
+def _latest_alert_id(conn: sqlite3.Connection, post_id: str) -> int | None:
+    row = conn.execute(
+        "SELECT id FROM alerts WHERE post_id = ? ORDER BY triggered_at DESC, id DESC LIMIT 1",
+        (post_id,),
+    ).fetchone()
+    return row[0] if row is not None else None
+
+
+def transition_incident(
+    conn: sqlite3.Connection, post_id: str, new_status: str, note: str | None = None
+) -> bool:
+    """Moves the post's latest alert to a new incident_status, logging the
+    transition to incident_events -- independent of qa_status (see the
+    `incident_status` column comment in _SCHEMA).
+
+    Returns whether a row was actually updated (False if no alert exists).
+    """
+    row = conn.execute(
+        "SELECT id, incident_status FROM alerts WHERE post_id = ? "
+        "ORDER BY triggered_at DESC, id DESC LIMIT 1",
+        (post_id,),
+    ).fetchone()
+    if row is None:
+        return False
+    alert_id, from_status = row
+    conn.execute("UPDATE alerts SET incident_status = ? WHERE id = ?", (new_status, alert_id))
+    conn.execute(
+        "INSERT INTO incident_events (alert_id, from_status, to_status, note, created_at) "
+        "VALUES (?, ?, ?, ?, ?)",
+        (alert_id, from_status, new_status, note, datetime.now(timezone.utc).isoformat()),
+    )
+    conn.commit()
+    return True
+
+
+def get_incident_timeline(
+    conn: sqlite3.Connection, post_id: str
+) -> list[tuple[str, str, str | None, str]]:
+    """(from_status, to_status, note, created_at) for the post's latest alert,
+    oldest first -- shown in the incident detail panel and folded into the
+    post-incident report.
+    """
+    return conn.execute(
+        """
+        SELECT e.from_status, e.to_status, e.note, e.created_at
+        FROM incident_events e
+        WHERE e.alert_id = (
+            SELECT a.id FROM alerts a WHERE a.post_id = ?
+            ORDER BY a.triggered_at DESC, a.id DESC LIMIT 1
+        )
+        ORDER BY e.created_at ASC, e.id ASC
+        """,
+        (post_id,),
+    ).fetchall()
+
+
+def save_exec_brief(conn: sqlite3.Connection, post_id: str, brief: str) -> bool:
+    """Persists a generated exec brief on the post's latest alert row --
+    returns False if no alert exists for post_id (nothing to attach it to).
+    """
+    alert_id = _latest_alert_id(conn, post_id)
+    if alert_id is None:
+        return False
+    conn.execute(
+        "UPDATE alerts SET exec_brief = ?, exec_brief_generated_at = ? WHERE id = ?",
+        (brief, datetime.now(timezone.utc).isoformat(), alert_id),
+    )
+    conn.commit()
+    return True
+
+
+def save_incident_report(conn: sqlite3.Connection, post_id: str, report_markdown: str) -> bool:
+    alert_id = _latest_alert_id(conn, post_id)
+    if alert_id is None:
+        return False
+    conn.execute(
+        "UPDATE alerts SET incident_report = ?, incident_report_generated_at = ? WHERE id = ?",
+        (report_markdown, datetime.now(timezone.utc).isoformat(), alert_id),
+    )
+    conn.commit()
+    return True
+
+
+def get_cluster_brief(conn: sqlite3.Connection, cluster_key: str) -> str | None:
+    row = conn.execute(
+        "SELECT brief FROM cluster_briefs WHERE cluster_key = ?", (cluster_key,)
+    ).fetchone()
+    return row[0] if row else None
+
+
+def save_cluster_brief(conn: sqlite3.Connection, cluster_key: str, brief: str) -> None:
+    conn.execute(
+        """
+        INSERT INTO cluster_briefs (cluster_key, brief, generated_at)
+        VALUES (?, ?, ?)
+        ON CONFLICT(cluster_key) DO UPDATE SET
+            brief = excluded.brief,
+            generated_at = excluded.generated_at
+        """,
+        (cluster_key, brief, datetime.now(timezone.utc).isoformat()),
     )
     conn.commit()

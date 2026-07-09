@@ -4,12 +4,17 @@ import pytest
 from pydantic import ValidationError
 
 from radar.config import (
+    DEFAULT_ESCALATION_CRITERIA,
     DEFAULT_RISK_PATTERNS,
     MAX_EFFECTIVE_TERMS,
     Settings,
+    category_requires_qa,
     effective_terms,
+    effective_velocity_threshold,
+    load_escalation_criteria,
     load_known_incidents,
     load_search_terms,
+    save_escalation_criteria,
     save_search_terms,
 )
 
@@ -18,7 +23,7 @@ def test_settings_defaults_applied_when_unset():
     settings = Settings(author_hash_pepper="pepper", _env_file=None)
     assert settings.poll_interval_seconds == 7200
     assert settings.top_n == 50
-    assert settings.human_qa_categories == ["abuse", "credential_theft", "safety"]
+    assert settings.recurrence_gap_hours == 48.0
     assert settings.classifier_model == "claude-haiku-4-5-20251001"
 
 
@@ -123,6 +128,82 @@ def test_effective_terms_crosses_clients_with_risk_patterns():
 def test_effective_terms_with_no_clients_returns_generic_terms_only():
     config = {"terms": ["Claude API"], "clients": [], "risk_patterns": ["jailbreak"]}
     assert effective_terms(config) == ["Claude API"]
+
+
+def test_load_escalation_criteria_returns_defaults_when_file_missing(tmp_path):
+    criteria = load_escalation_criteria(path=tmp_path / "does_not_exist.yaml")
+    assert criteria == DEFAULT_ESCALATION_CRITERIA
+    # Every PainCategory value is present, matching the original hardcoded
+    # HUMAN_QA_CATEGORIES = ["abuse", "credential_theft", "safety"] default.
+    assert criteria["abuse"]["requires_qa"] is True
+    assert criteria["credential_theft"]["requires_qa"] is True
+    assert criteria["safety"]["requires_qa"] is True
+    assert criteria["product_bug"]["requires_qa"] is False
+
+
+def test_load_escalation_criteria_fills_in_category_missing_from_saved_file(tmp_path):
+    yaml_path = tmp_path / "escalation_criteria.yaml"
+    yaml_path.write_text(
+        "categories:\n  safety:\n    requires_qa: false\n    velocity_threshold: 5.0\n"
+        "    response_template: custom template\n"
+    )
+
+    criteria = load_escalation_criteria(path=yaml_path)
+
+    assert criteria["safety"] == {
+        "requires_qa": False,
+        "velocity_threshold": 5.0,
+        "response_template": "custom template",
+    }
+    # A category absent from the saved file still gets its full default row.
+    assert criteria["product_bug"] == DEFAULT_ESCALATION_CRITERIA["product_bug"]
+
+
+def test_save_escalation_criteria_merges_and_preserves_other_categories(tmp_path):
+    yaml_path = tmp_path / "escalation_criteria.yaml"
+
+    save_escalation_criteria(
+        {"credential_theft": {"velocity_threshold": 2.0}}, path=yaml_path
+    )
+    reloaded = load_escalation_criteria(path=yaml_path)
+
+    assert reloaded["credential_theft"]["velocity_threshold"] == 2.0
+    assert reloaded["credential_theft"]["requires_qa"] is True  # untouched by the update
+    assert reloaded["product_bug"] == DEFAULT_ESCALATION_CRITERIA["product_bug"]
+
+
+def test_category_requires_qa():
+    criteria = {"safety": {"requires_qa": True}, "product_bug": {"requires_qa": False}}
+    assert category_requires_qa(criteria, "safety") is True
+    assert category_requires_qa(criteria, "product_bug") is False
+    assert category_requires_qa(criteria, "unknown_category") is False
+
+
+def test_effective_velocity_threshold_category_override_wins():
+    settings = Settings(
+        author_hash_pepper="pepper",
+        velocity_threshold=10.0,
+        velocity_threshold_overrides={"youtube": 500.0},
+        _env_file=None,
+    )
+    criteria = {"credential_theft": {"velocity_threshold": 1.0}}
+    assert effective_velocity_threshold(settings, criteria, "youtube", "credential_theft") == 1.0
+
+
+def test_effective_velocity_threshold_falls_back_to_platform_override():
+    settings = Settings(
+        author_hash_pepper="pepper",
+        velocity_threshold=10.0,
+        velocity_threshold_overrides={"youtube": 500.0},
+        _env_file=None,
+    )
+    criteria = {"credential_theft": {"velocity_threshold": None}}
+    assert effective_velocity_threshold(settings, criteria, "youtube", "credential_theft") == 500.0
+
+
+def test_effective_velocity_threshold_falls_back_to_global_default():
+    settings = Settings(author_hash_pepper="pepper", velocity_threshold=10.0, _env_file=None)
+    assert effective_velocity_threshold(settings, {}, "reddit", "product_bug") == 10.0
 
 
 def test_effective_terms_truncated_to_max_with_generic_terms_kept_first():

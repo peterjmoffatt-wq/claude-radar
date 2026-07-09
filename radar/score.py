@@ -5,7 +5,13 @@ import sys
 from dataclasses import dataclass
 from datetime import datetime
 
-from radar.config import Settings, get_settings
+from radar.config import (
+    Settings,
+    category_requires_qa,
+    effective_velocity_threshold,
+    get_settings,
+    load_escalation_criteria,
+)
 from radar.db import (
     get_connection,
     get_latest_alert_velocity,
@@ -57,11 +63,14 @@ def run_scoring(settings: Settings | None = None) -> ScoringResult:
         if not pain_points:
             return ScoringResult(alerts_written=0, skipped=True)
 
+        criteria = load_escalation_criteria()
+
         written = 0
         for post_id, category, severity, platform in pain_points:
             history = get_snapshot_history(conn, post_id)
             velocity = compute_velocity(history)
-            if velocity is None or velocity < settings.velocity_threshold_for(platform):
+            threshold = effective_velocity_threshold(settings, criteria, platform, category)
+            if velocity is None or velocity < threshold:
                 continue
 
             last_alert_velocity = get_latest_alert_velocity(conn, post_id)
@@ -69,7 +78,7 @@ def run_scoring(settings: Settings | None = None) -> ScoringResult:
                 # Suppress repeat alerts unless engagement is accelerating further.
                 continue
 
-            qa_status = "pending" if category in settings.human_qa_categories else "not_required"
+            qa_status = "pending" if category_requires_qa(criteria, category) else "not_required"
             latest_score = history[-1][1]
             write_alert(conn, post_id, latest_score, velocity, category, severity, qa_status)
             written += 1

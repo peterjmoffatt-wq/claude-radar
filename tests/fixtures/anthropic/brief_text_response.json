@@ -1,0 +1,15 @@
+{
+  "id": "msg_01BRIEF001",
+  "type": "message",
+  "role": "assistant",
+  "model": "claude-haiku-4-5-20251001",
+  "content": [
+    {
+      "type": "text",
+      "text": "YouTube alert: users report Claude Code deleting the wrong plugin during cleanup. Velocity is moderate and confined to one platform so far. Recommend eng triage before the next release."
+    }
+  ],
+  "stop_reason": "end_turn",
+  "stop_sequence": null,
+  "usage": {"input_tokens": 180, "output_tokens": 42}
+}

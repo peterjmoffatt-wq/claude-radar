@@ -6,10 +6,17 @@ from datetime import datetime, timedelta, timezone
 from radar.db import (
     count_advertisements,
     get_alerts,
+    get_cluster_brief,
     get_connection,
+    get_incident_timeline,
     get_snapshot_history,
     get_unscored_pain_points,
     init_db,
+    save_cluster_brief,
+    save_exec_brief,
+    save_incident_report,
+    transition_incident,
+    write_alert,
     write_classifications,
 )
 from radar.models import Classification, ModelImplicated, PainCategory, Severity
@@ -210,6 +217,37 @@ def test_get_alerts_returns_latest_snapshot_author_and_engagement(tmp_path):
     assert row[17] == datetime(2024, 1, 1, 1, tzinfo=timezone.utc).isoformat()
 
 
+def test_get_alerts_filters_by_post_id(tmp_path):
+    conn = get_connection(tmp_path / "radar.db")
+    init_db(conn)
+    now = datetime.now(timezone.utc).isoformat()
+    for post_id in ("t3_x", "t3_y"):
+        conn.execute(
+            """
+            INSERT INTO classifications (
+                post_id, is_pain_point, category, model_implicated, severity,
+                issue_summary, classifier_model, classified_at
+            ) VALUES (?, 1, 'product_bug', 'claude_api_general', 'high', 'a summary', 'test-model', ?)
+            """,
+            (post_id, now),
+        )
+        conn.execute(
+            """
+            INSERT INTO alerts (post_id, triggered_at, virality_score, velocity, category, severity, qa_status)
+            VALUES (?, ?, 100.0, 40.0, 'product_bug', 'high', 'not_required')
+            """,
+            (post_id, now),
+        )
+        _seed_two_snapshots(conn, post_id)
+    conn.commit()
+
+    rows = get_alerts(conn, post_id="t3_x")
+    conn.close()
+
+    assert len(rows) == 1
+    assert rows[0][0] == "t3_x"
+
+
 def test_get_unscored_pain_points_returns_latest_snapshot_author_and_engagement(tmp_path):
     conn = get_connection(tmp_path / "radar.db")
     init_db(conn)
@@ -274,3 +312,205 @@ def test_get_snapshot_history_collapses_same_run_duplicates(tmp_path):
     assert len(history) == 2
     assert history[0] == (run1_at, 10.0)
     assert history[1] == (run2_recent_at, 51.0)  # latest row within run-2 wins
+
+
+def test_migrate_adds_incident_columns_to_pre_existing_alerts_table(tmp_path):
+    # Simulates a database file created before the incident-lifecycle/brief/
+    # report columns existed: build the OLD-shape alerts table by hand with a
+    # real row in it, then confirm init_db() adds the columns via ALTER TABLE
+    # without losing that row.
+    db_path = tmp_path / "old.db"
+    conn = sqlite3.connect(db_path)
+    conn.execute(
+        """
+        CREATE TABLE alerts (
+            id                INTEGER PRIMARY KEY AUTOINCREMENT,
+            post_id           TEXT NOT NULL,
+            triggered_at      TEXT NOT NULL,
+            virality_score    REAL NOT NULL,
+            velocity          REAL NOT NULL,
+            category          TEXT NOT NULL,
+            severity          TEXT NOT NULL,
+            qa_status         TEXT NOT NULL
+        )
+        """
+    )
+    conn.execute(
+        "INSERT INTO alerts (post_id, triggered_at, virality_score, velocity, category, "
+        "severity, qa_status) VALUES ('t3_old', '2024-01-01T00:00:00+00:00', 10.0, 5.0, "
+        "'product_bug', 'high', 'not_required')"
+    )
+    conn.commit()
+    conn.close()
+
+    conn = get_connection(db_path)
+    init_db(conn)
+
+    columns = {row[1] for row in conn.execute("PRAGMA table_info(alerts)").fetchall()}
+    assert {
+        "incident_status",
+        "exec_brief",
+        "exec_brief_generated_at",
+        "incident_report",
+        "incident_report_generated_at",
+    } <= columns
+
+    row = conn.execute(
+        "SELECT post_id, incident_status, exec_brief FROM alerts WHERE post_id = 't3_old'"
+    ).fetchone()
+    conn.close()
+    assert row == ("t3_old", "open", None)
+
+
+def test_new_alert_defaults_to_open_incident_status(tmp_path):
+    conn = get_connection(tmp_path / "radar.db")
+    init_db(conn)
+
+    write_alert(conn, "t3_new", 10.0, 5.0, "product_bug", "high", "not_required")
+
+    status = conn.execute("SELECT incident_status FROM alerts WHERE post_id = 't3_new'").fetchone()
+    conn.close()
+    assert status == ("open",)
+
+
+def test_transition_incident_updates_status_and_logs_event(tmp_path):
+    conn = get_connection(tmp_path / "radar.db")
+    init_db(conn)
+    write_alert(conn, "t3_a", 10.0, 5.0, "product_bug", "high", "not_required")
+
+    changed = transition_incident(conn, "t3_a", "acknowledged", note="Looking into it")
+
+    status = conn.execute("SELECT incident_status FROM alerts WHERE post_id = 't3_a'").fetchone()
+    timeline = get_incident_timeline(conn, "t3_a")
+    conn.close()
+
+    assert changed is True
+    assert status == ("acknowledged",)
+    assert len(timeline) == 1
+    from_status, to_status, note, created_at = timeline[0]
+    assert (from_status, to_status, note) == ("open", "acknowledged", "Looking into it")
+    assert created_at
+
+
+def test_transition_incident_returns_false_when_no_alert_exists(tmp_path):
+    conn = get_connection(tmp_path / "radar.db")
+    init_db(conn)
+
+    changed = transition_incident(conn, "t3_missing", "acknowledged")
+    conn.close()
+
+    assert changed is False
+
+
+def test_transition_incident_operates_on_latest_alert_row(tmp_path):
+    # A post that re-alerted (accelerated twice) has two alert rows -- the
+    # transition (like resolve_alert/get_latest_alert_velocity) must act on
+    # the newest one, not an earlier superseded row.
+    conn = get_connection(tmp_path / "radar.db")
+    init_db(conn)
+    write_alert(conn, "t3_re", 10.0, 5.0, "product_bug", "high", "not_required")
+    write_alert(conn, "t3_re", 20.0, 15.0, "product_bug", "high", "not_required")
+
+    transition_incident(conn, "t3_re", "acknowledged")
+
+    rows = conn.execute(
+        "SELECT velocity, incident_status FROM alerts WHERE post_id = 't3_re' ORDER BY id"
+    ).fetchall()
+    conn.close()
+
+    assert rows == [(5.0, "open"), (15.0, "acknowledged")]
+
+
+def test_get_incident_timeline_returns_events_oldest_first(tmp_path):
+    conn = get_connection(tmp_path / "radar.db")
+    init_db(conn)
+    write_alert(conn, "t3_b", 10.0, 5.0, "product_bug", "high", "not_required")
+
+    transition_incident(conn, "t3_b", "acknowledged")
+    transition_incident(conn, "t3_b", "mitigating")
+    transition_incident(conn, "t3_b", "resolved", note="Fixed upstream")
+
+    timeline = get_incident_timeline(conn, "t3_b")
+    conn.close()
+
+    assert [(f, t) for f, t, _, _ in timeline] == [
+        ("open", "acknowledged"),
+        ("acknowledged", "mitigating"),
+        ("mitigating", "resolved"),
+    ]
+    assert timeline[-1][2] == "Fixed upstream"
+
+
+def test_save_exec_brief_persists_and_returns_true(tmp_path):
+    conn = get_connection(tmp_path / "radar.db")
+    init_db(conn)
+    write_alert(conn, "t3_c", 10.0, 5.0, "product_bug", "high", "not_required")
+
+    changed = save_exec_brief(conn, "t3_c", "Users report X. Velocity Y. Recommend Z.")
+
+    row = conn.execute(
+        "SELECT exec_brief, exec_brief_generated_at FROM alerts WHERE post_id = 't3_c'"
+    ).fetchone()
+    conn.close()
+    assert changed is True
+    assert row[0] == "Users report X. Velocity Y. Recommend Z."
+    assert row[1]  # timestamp written
+
+
+def test_save_exec_brief_returns_false_when_no_alert_exists(tmp_path):
+    conn = get_connection(tmp_path / "radar.db")
+    init_db(conn)
+
+    changed = save_exec_brief(conn, "t3_missing", "brief text")
+    conn.close()
+
+    assert changed is False
+
+
+def test_save_incident_report_persists_and_returns_true(tmp_path):
+    conn = get_connection(tmp_path / "radar.db")
+    init_db(conn)
+    write_alert(conn, "t3_d", 10.0, 5.0, "product_bug", "high", "not_required")
+
+    changed = save_incident_report(conn, "t3_d", "# Post-incident report\n...")
+
+    row = conn.execute(
+        "SELECT incident_report, incident_report_generated_at FROM alerts WHERE post_id = 't3_d'"
+    ).fetchone()
+    conn.close()
+    assert changed is True
+    assert row[0] == "# Post-incident report\n..."
+    assert row[1]
+
+
+def test_cluster_brief_save_and_get_round_trip(tmp_path):
+    conn = get_connection(tmp_path / "radar.db")
+    init_db(conn)
+
+    save_cluster_brief(conn, "product_bug:claude_code", "This cluster is spreading.")
+    brief = get_cluster_brief(conn, "product_bug:claude_code")
+    conn.close()
+
+    assert brief == "This cluster is spreading."
+
+
+def test_get_cluster_brief_returns_none_when_absent(tmp_path):
+    conn = get_connection(tmp_path / "radar.db")
+    init_db(conn)
+
+    brief = get_cluster_brief(conn, "product_bug:claude_code")
+    conn.close()
+
+    assert brief is None
+
+
+def test_save_cluster_brief_upserts_existing_key(tmp_path):
+    conn = get_connection(tmp_path / "radar.db")
+    init_db(conn)
+
+    save_cluster_brief(conn, "safety:unknown", "First version.")
+    save_cluster_brief(conn, "safety:unknown", "Regenerated version.")
+    brief = get_cluster_brief(conn, "safety:unknown")
+    conn.close()
+
+    assert brief == "Regenerated version."

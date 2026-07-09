@@ -6,17 +6,20 @@ sensitive categories behind human review, clusters them by root cause, and surfa
 important clusters on a dashboard with a lead-time metric — how early we spotted an issue
 versus when it went viral. Built as a portfolio/interview prototype.
 
-**Status: Phase 9 of 9 (all phases scaffolded), plus a Mastodon source and a dashboard source
-picker/live-collection trigger added afterward.** Collectors for Reddit, YouTube, Hacker News,
-Stack Overflow, GitHub Issues, and Mastodon write a time series of post snapshots to SQLite; a
-Claude-based classifier labels pain points; a scorer turns accelerating pain points into
-alerts; a human QA gate reviews sensitive categories; a clustering step groups alerts by root
-cause; a FastAPI + static dashboard surfaces all of it (including an interactive, draggable
-cross-platform footprint graph on the home tab); a lead-time metric measures how early the
-early-warning pass caught things; and a backtest CLI replays scored alerts against known past
-incidents. An X/Twitter source exists behind a feature flag but ships inert (no free API tier
-— see Phase 9 below). See "How it works" for the full per-phase breakdown, and "Platforms not
-included" for what a partner-API-funded version would add next.
+**Status: Phase 9 of 9 (all phases scaffolded), plus a Mastodon source, a dashboard source
+picker/live-collection trigger, and an incident-response layer (lifecycle, exec briefs,
+post-incident reports, recurrence detection, dashboard-editable escalation criteria) added
+afterward.** Collectors for Reddit, YouTube, Hacker News, Stack Overflow, GitHub Issues, and
+Mastodon write a time series of post snapshots to SQLite; a Claude-based classifier labels
+pain points; a scorer turns accelerating pain points into alerts; a human QA gate reviews
+sensitive categories; a clustering step groups alerts by root cause and flags recurrence; a
+FastAPI + static dashboard surfaces all of it (including an interactive, draggable
+cross-platform footprint graph on the home tab, and a per-alert incident-lifecycle/exec-brief/
+post-incident-report panel); a lead-time metric measures how early the early-warning pass
+caught things; and a backtest CLI replays scored alerts against known past incidents. An
+X/Twitter source exists behind a feature flag but ships inert (no free API tier — see Phase 9
+below). See "How it works" for the full per-phase breakdown, and "Platforms not included" for
+what a partner-API-funded version would add next.
 
 ## Guardrails
 
@@ -204,10 +207,17 @@ radar score
 
 For every post classified as a pain point, computes **velocity** (virality-score change per
 hour between its two most recent snapshots) and writes a row to the `alerts` table if velocity
-clears `VELOCITY_THRESHOLD` — but **only if it's accelerating past its own last alert**, not
-just still above threshold, so a steady (non-accelerating) pain point doesn't re-fire every
-run. Each alert is stamped `qa_status='pending'` if its category is in `HUMAN_QA_CATEGORIES`
+clears the effective threshold — a per-category override (`config/escalation_criteria.yaml`,
+dashboard-editable under Settings) if one is set, else the per-platform override
+(`VELOCITY_THRESHOLD_OVERRIDES`), else the global `VELOCITY_THRESHOLD` — but **only if it's
+accelerating past its own last alert**, not just still above threshold, so a steady
+(non-accelerating) pain point doesn't re-fire every run. Each alert is stamped
+`qa_status='pending'` if its category's `requires_qa` is true in `config/escalation_criteria.yaml`
 (`abuse`, `credential_theft`, `safety` by default) or `'not_required'` otherwise.
+
+Independent of `qa_status`, every alert also carries its own `incident_status`
+(`open` → `acknowledged` → `mitigating` → `resolved`, or `false_positive`) — see
+"Incident lifecycle, exec briefs, and post-incident reports" below.
 
 ## Human QA review
 
@@ -220,7 +230,25 @@ radar review reject t3_abc123
 This is the concrete form of the "gate before anything could fire an external alert" in a
 local-only tool: `'pending'` alerts (sensitive categories) sit here until a human approves or
 rejects them — via this CLI or the dashboard's own approve/reject buttons (same effect,
-`radar/qa.py` backs both).
+`radar/qa.py` backs both). Rejecting an alert also auto-closes its `incident_status` as
+`false_positive` (see below) — a rejected alert isn't a real incident to keep working.
+
+## Incident lifecycle, exec briefs, and post-incident reports
+
+Every alert also carries its own `incident_status` — `open` → `acknowledged` →
+`mitigating` → `resolved` (or `false_positive`) — independent of `qa_status`: QA gates
+whether the *classification* is legitimate, incident status tracks whether someone is
+*actually working* it. Each transition is logged to `incident_events` (from/to/note/
+timestamp), forming an audit trail. This, and everything below, is dashboard-only (no
+CLI subcommands) — expand any row in the Alerts tab via **Details** to work an incident:
+advance its status, generate a short **executive brief** (2-3 sentences, Claude-generated
+via the same `httpx`+forced-nothing pattern the classifier uses for structured
+classification, with a deterministic template fallback if `ANTHROPIC_API_KEY` is unset or
+the call fails), and — once you're done — generate a **post-incident report**: a
+Markdown document combining the hard facts, the full status timeline, a Claude-written
+"what happened" narrative, and your own closing note on what should change, downloadable
+as `.md` or copyable to the clipboard. The footprint graph's hub detail panel can
+generate the same kind of brief for a whole root-cause cluster, not just one alert.
 
 ## Root-cause clusters
 
@@ -230,8 +258,13 @@ radar clusters
 
 Groups all alerts by `(category, model_implicated)` — a deterministic, dependency-free
 grouping computed at query time (no separate table to drift out of sync) — and prints each
-cluster's alert count, worst severity, and a representative issue summary. The dashboard's
-`/api/clusters` endpoint calls the same function.
+cluster's alert count, worst severity, and a representative issue summary, plus (when it
+applies) how many separate **episodes** it's recurred in: a quiet gap longer than
+`RECURRENCE_GAP_HOURS` (default 48) between alerts starts a new episode, so "recurring ×3"
+means this root cause has gone quiet and come back three separate times, not just alerted
+three times in one burst. The dashboard's `/api/clusters` endpoint calls the same function
+and surfaces the same fields (plus any cached exec brief) in the Home tab's cluster chart
+and the footprint graph's hub detail panel.
 
 ## Lead-time metric
 
@@ -283,8 +316,10 @@ toggling is instant and doesn't re-fetch.
 **Watching** and **Alerts** are the filterable, sortable tables — Platform/Category/Severity
 filters on both (Alerts also filters by QA status), a Platform filter added to Alerts, and
 click-to-sort column headers (Platform/Category/Severity/Velocity) with a ▲/▼ indicator; Alerts
-keeps its inline approve/reject actions. Both tables show **Matched term** so a client-scoped
-hit (e.g. `"McDonald's jailbreak"`) is visibly distinct from a generic one.
+keeps its inline approve/reject actions, plus an **Incident** status column and a **Details**
+toggle per row that expands into the incident lifecycle/brief/report panel described above.
+Both tables show **Matched term** so a client-scoped hit (e.g. `"McDonald's jailbreak"`) is
+visibly distinct from a generic one.
 
 **Settings** holds everything about *what* gets searched, separated from the "what did we
 find" tabs above: the source picker (checkboxes for every real platform, pre-checked from
@@ -294,7 +329,10 @@ button that `POST`s to `/api/collect` and triggers a real, live collection pass 
 checked sources; three editable watchlists (Search terms, Watched clients, Risk patterns —
 see "Tuning the watchlist" above) with a live "effective query preview" and a single **Save
 watchlist** button that writes to `config/search_terms.yaml` (so CLI runs pick it up too, not
-just dashboard clicks). In production, collection runs on a schedule (e.g. a cron/systemd timer
+just dashboard clicks); and an **Escalation criteria** card — per category, whether it requires
+human QA, an optional velocity-threshold override, and a first-response playbook — that writes
+to `config/escalation_criteria.yaml`, so `radar score` (CLI or dashboard-triggered) picks up
+edits the same way. In production, collection runs on a schedule (e.g. a cron/systemd timer
 calling `radar collect`) rather than a manual click — this button is the same underlying
 operation, triggered on demand for the dashboard/demo case.
 
@@ -377,15 +415,23 @@ network access required for any of it.
   row): `is_pain_point`, `category`, `model_implicated`, `severity`, `issue_summary`, which
   `classifier_model` produced it, and when.
 - `alerts` — one row per *alert event* (a post can re-alert if it accelerates again):
-  `post_id`, `triggered_at`, `virality_score`, `velocity`, `category`, `severity`, and
-  `qa_status` (`pending` / `approved` / `rejected` / `not_required`).
+  `post_id`, `triggered_at`, `virality_score`, `velocity`, `category`, `severity`,
+  `qa_status` (`pending` / `approved` / `rejected` / `not_required`), `incident_status`
+  (`open` / `acknowledged` / `mitigating` / `resolved` / `false_positive`), and a cached
+  `exec_brief`/`incident_report` once generated.
+- `incident_events` — append-only timeline of `incident_status` transitions
+  (`alert_id`, `from_status`, `to_status`, `note`, `created_at`) — the audit trail behind
+  the Alerts tab's Details panel and the post-incident report.
+- `cluster_briefs` — one cached exec brief per root-cause cluster (`cluster_key`), since
+  clusters themselves aren't otherwise persisted (`get_clusters()` computes them fresh).
 
 ## Project layout
 
 ```
 radar/
 ├── models.py              # RawPost, Metrics, Classification + enums
-├── config.py               # Settings (pydantic-settings) + search_terms.yaml / known_incidents.yaml loaders
+├── config.py               # Settings (pydantic-settings) + search_terms.yaml / known_incidents.yaml /
+│                            # escalation_criteria.yaml loaders
 ├── hashing.py               # author hashing
 ├── virality.py              # virality score formula
 ├── http_utils.py             # shared rate-limit/backoff HTTP helper (handles both relative-
@@ -402,6 +448,7 @@ radar/
 │   └── x.py                              # XSource (feature-flagged, inert without a paid token)
 ├── collect.py                             # orchestration across all configured sources: `radar collect`
 ├── classify.py                     # ClaudeClassifier + orchestration: `radar classify`
+├── brief.py                          # exec-brief / post-incident-report generation (same Claude-call shape as classify.py)
 ├── score.py                         # velocity scoring + alert suppression: `radar score`
 ├── qa.py                              # human QA gate: `radar review`
 ├── cluster.py                          # root-cause clustering: `radar clusters`

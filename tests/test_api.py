@@ -10,6 +10,7 @@ from fastapi.testclient import TestClient
 import radar.api as api_module
 import radar.collect as collect_module
 import radar.config as config_module
+from radar.classify import API_URL as ANTHROPIC_API_URL
 from radar.db import get_connection, init_db
 from radar.sources.reddit import API_BASE, TOKEN_URL
 
@@ -477,3 +478,274 @@ def test_api_put_search_terms_rejects_over_the_cap(tmp_path, monkeypatch):
     assert response.status_code == 400
     # Rejected before writing -- the file on disk is unaffected.
     assert config_module.load_search_terms(yaml_path)["terms"] == []
+
+
+def test_api_alerts_includes_incident_and_brief_fields(client):
+    test_client, settings = client
+    conn = get_connection(settings.database_path)
+    init_db(conn)
+    _seed_alert(conn, "t3_a")
+    conn.close()
+
+    response = test_client.get("/api/alerts")
+
+    body = response.json()[0]
+    assert body["incident_status"] == "open"
+    assert body["exec_brief"] is None
+    assert body["exec_brief_generated_at"] is None
+    assert body["incident_report"] is None
+    assert body["incident_report_generated_at"] is None
+
+
+def test_api_review_reject_auto_closes_incident_as_false_positive(client):
+    test_client, settings = client
+    conn = get_connection(settings.database_path)
+    init_db(conn)
+    _seed_alert(conn, "t3_a", qa_status="pending", category="abuse")
+    conn.close()
+
+    response = test_client.post("/api/alerts/t3_a/review", json={"decision": "rejected"})
+
+    assert response.status_code == 200
+    conn = get_connection(settings.database_path)
+    incident_status = conn.execute(
+        "SELECT incident_status FROM alerts WHERE post_id='t3_a'"
+    ).fetchone()[0]
+    conn.close()
+    assert incident_status == "false_positive"
+
+
+def test_api_review_approve_does_not_touch_incident_status(client):
+    test_client, settings = client
+    conn = get_connection(settings.database_path)
+    init_db(conn)
+    _seed_alert(conn, "t3_a", qa_status="pending", category="abuse")
+    conn.close()
+
+    test_client.post("/api/alerts/t3_a/review", json={"decision": "approved"})
+
+    conn = get_connection(settings.database_path)
+    incident_status = conn.execute(
+        "SELECT incident_status FROM alerts WHERE post_id='t3_a'"
+    ).fetchone()[0]
+    conn.close()
+    assert incident_status == "open"
+
+
+def test_api_alert_transition_updates_status(client):
+    test_client, settings = client
+    conn = get_connection(settings.database_path)
+    init_db(conn)
+    _seed_alert(conn, "t3_a")
+    conn.close()
+
+    response = test_client.post(
+        "/api/alerts/t3_a/transition", json={"status": "acknowledged", "note": "Looking into it"}
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {"post_id": "t3_a", "incident_status": "acknowledged"}
+
+
+def test_api_alert_transition_404_when_no_alert(client):
+    test_client, _settings = client
+    response = test_client.post("/api/alerts/nonexistent/transition", json={"status": "acknowledged"})
+    assert response.status_code == 404
+
+
+def test_api_alert_transition_rejects_invalid_status(client):
+    test_client, settings = client
+    conn = get_connection(settings.database_path)
+    init_db(conn)
+    _seed_alert(conn, "t3_a")
+    conn.close()
+
+    response = test_client.post("/api/alerts/t3_a/transition", json={"status": "not_a_real_status"})
+
+    assert response.status_code == 422
+
+
+def test_api_alert_timeline_returns_events_in_order(client):
+    test_client, settings = client
+    conn = get_connection(settings.database_path)
+    init_db(conn)
+    _seed_alert(conn, "t3_a")
+    conn.close()
+
+    test_client.post("/api/alerts/t3_a/transition", json={"status": "acknowledged"})
+    test_client.post("/api/alerts/t3_a/transition", json={"status": "resolved", "note": "Fixed"})
+
+    response = test_client.get("/api/alerts/t3_a/timeline")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert [(e["from_status"], e["to_status"]) for e in body] == [
+        ("open", "acknowledged"),
+        ("acknowledged", "resolved"),
+    ]
+    assert body[1]["note"] == "Fixed"
+
+
+@respx.mock
+def test_api_alert_brief_generates_and_persists(client, load_anthropic_fixture):
+    test_client, settings = client
+    conn = get_connection(settings.database_path)
+    init_db(conn)
+    _seed_alert(conn, "t3_a")
+    conn.close()
+    respx.post(ANTHROPIC_API_URL).mock(
+        return_value=httpx.Response(200, json=load_anthropic_fixture("brief_text_response.json"))
+    )
+
+    response = test_client.post("/api/alerts/t3_a/brief")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["post_id"] == "t3_a"
+    assert "Recommend eng triage" in body["brief"]
+
+    conn = get_connection(settings.database_path)
+    stored = conn.execute("SELECT exec_brief FROM alerts WHERE post_id='t3_a'").fetchone()[0]
+    conn.close()
+    assert stored == body["brief"]
+
+
+def test_api_alert_brief_404_when_no_alert(client):
+    test_client, _settings = client
+    response = test_client.post("/api/alerts/nonexistent/brief")
+    assert response.status_code == 404
+
+
+@respx.mock
+def test_api_cluster_brief_generates_and_persists(client, load_anthropic_fixture):
+    test_client, settings = client
+    conn = get_connection(settings.database_path)
+    init_db(conn)
+    _seed_alert(conn, "t3_a", category="product_bug")
+    _seed_alert(conn, "t3_b", category="product_bug")
+    conn.close()
+    respx.post(ANTHROPIC_API_URL).mock(
+        return_value=httpx.Response(200, json=load_anthropic_fixture("brief_text_response.json"))
+    )
+
+    cluster_key = "product_bug:claude_api_general"
+    response = test_client.post(f"/api/clusters/{cluster_key}/brief")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["cluster_key"] == cluster_key
+    assert "Recommend eng triage" in body["brief"]
+
+    # /api/clusters now surfaces the persisted brief.
+    clusters_response = test_client.get("/api/clusters")
+    cluster = next(c for c in clusters_response.json() if c["cluster_key"] == cluster_key)
+    assert cluster["brief"] == body["brief"]
+
+
+def test_api_cluster_brief_404_when_cluster_not_found(client):
+    test_client, _settings = client
+    response = test_client.post("/api/clusters/product_bug:unknown/brief")
+    assert response.status_code == 404
+
+
+@respx.mock
+def test_api_alert_report_generates_and_persists(client, load_anthropic_fixture):
+    test_client, settings = client
+    conn = get_connection(settings.database_path)
+    init_db(conn)
+    _seed_alert(conn, "t3_a")
+    conn.close()
+    respx.post(ANTHROPIC_API_URL).mock(
+        return_value=httpx.Response(200, json=load_anthropic_fixture("brief_text_response.json"))
+    )
+    test_client.post("/api/alerts/t3_a/transition", json={"status": "resolved", "note": "Fixed upstream"})
+
+    response = test_client.post("/api/alerts/t3_a/report", json={"closing_note": "Add a regression test."})
+
+    assert response.status_code == 200
+    body = response.json()
+    assert "# Post-incident report" in body["report_markdown"]
+    assert "Add a regression test." in body["report_markdown"]
+    assert "Fixed upstream" in body["report_markdown"]
+
+    conn = get_connection(settings.database_path)
+    stored = conn.execute("SELECT incident_report FROM alerts WHERE post_id='t3_a'").fetchone()[0]
+    conn.close()
+    assert stored == body["report_markdown"]
+
+
+def test_api_clusters_includes_recurrence_and_brief_fields(client):
+    test_client, settings = client
+    conn = get_connection(settings.database_path)
+    init_db(conn)
+    _seed_alert(conn, "t3_a", category="product_bug")
+    conn.close()
+
+    response = test_client.get("/api/clusters")
+
+    body = response.json()[0]
+    assert body["episode_count"] == 1
+    assert body["first_triggered_at"]
+    assert body["platforms"] == ["reddit"]
+    assert body["brief"] is None
+
+
+def test_api_get_escalation_criteria_returns_defaults(client):
+    test_client, _settings = client
+    response = test_client.get("/api/escalation-criteria")
+
+    assert response.status_code == 200
+    categories = response.json()["categories"]
+    assert categories["safety"]["requires_qa"] is True
+    assert categories["product_bug"]["requires_qa"] is False
+    assert set(categories.keys()) == {
+        "api_abuse", "product_bug", "ux_confusion", "messaging_gap",
+        "credential_theft", "abuse", "safety", "other",
+    }
+
+
+def test_api_put_escalation_criteria_persists_and_affects_scoring(tmp_path, monkeypatch, client):
+    test_client, settings = client
+    yaml_path = tmp_path / "escalation_criteria.yaml"
+    monkeypatch.setattr(
+        api_module, "load_escalation_criteria", lambda: config_module.load_escalation_criteria(yaml_path)
+    )
+    monkeypatch.setattr(
+        api_module,
+        "save_escalation_criteria",
+        lambda updates: config_module.save_escalation_criteria(updates, path=yaml_path),
+    )
+
+    response = test_client.put(
+        "/api/escalation-criteria",
+        json={
+            "categories": {
+                "product_bug": {
+                    "requires_qa": True,
+                    "velocity_threshold": 3.0,
+                    "response_template": "Escalate immediately.",
+                }
+            }
+        },
+    )
+
+    assert response.status_code == 200
+    body = response.json()["categories"]
+    assert body["product_bug"] == {
+        "requires_qa": True,
+        "velocity_threshold": 3.0,
+        "response_template": "Escalate immediately.",
+    }
+    # Persisted to disk, not just the response -- and other categories survive untouched.
+    reloaded = config_module.load_escalation_criteria(yaml_path)
+    assert reloaded["product_bug"]["velocity_threshold"] == 3.0
+    assert reloaded["safety"]["requires_qa"] is True
+
+
+def test_api_put_escalation_criteria_rejects_invalid_shape(client):
+    test_client, _settings = client
+    response = test_client.put(
+        "/api/escalation-criteria",
+        json={"categories": {"product_bug": {"requires_qa": "not-a-bool"}}},
+    )
+    assert response.status_code == 422

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 
+import radar.score as score_module
 from radar.db import get_connection, init_db
 from radar.score import compute_velocity, run_scoring
 
@@ -223,3 +224,58 @@ def test_velocity_threshold_override_applies_per_platform(settings_factory):
     alerted = {row[0] for row in conn.execute("SELECT post_id FROM alerts").fetchall()}
     conn.close()
     assert alerted == {"t3_reddit"}
+
+
+def _stub_criteria(criteria: dict):
+    return lambda *args, **kwargs: criteria
+
+
+def test_qa_status_driven_by_escalation_criteria_not_hardcoded_list(settings_factory, monkeypatch):
+    # requires_qa=True for a category NOT in the old hardcoded
+    # HUMAN_QA_CATEGORIES list -- proves qa_status now comes from the loaded
+    # criteria, not a leftover Settings field.
+    monkeypatch.setattr(
+        score_module,
+        "load_escalation_criteria",
+        _stub_criteria({"ux_confusion": {"requires_qa": True, "velocity_threshold": None}}),
+    )
+    settings = settings_factory(velocity_threshold=10.0)
+    conn = _seeded_conn(settings)
+    _insert_snapshot(conn, "t3_f", BASE, 10.0, poll_run_id="run-1")
+    _insert_snapshot(conn, "t3_f", BASE + timedelta(hours=1), 50.0, poll_run_id="run-2")
+    _insert_classification(conn, "t3_f", category="ux_confusion")
+    conn.close()
+
+    run_scoring(settings)
+
+    conn = get_connection(settings.database_path)
+    row = conn.execute("SELECT qa_status FROM alerts WHERE post_id = 't3_f'").fetchone()
+    conn.close()
+    assert row[0] == "pending"
+
+
+def test_category_velocity_threshold_override_wins_over_platform_override(
+    settings_factory, monkeypatch
+):
+    # A category override (from escalation_criteria.yaml) must win over a
+    # platform override (velocity_threshold_overrides) for the same alert --
+    # see effective_velocity_threshold()'s documented precedence.
+    monkeypatch.setattr(
+        score_module,
+        "load_escalation_criteria",
+        _stub_criteria({"credential_theft": {"requires_qa": True, "velocity_threshold": 5.0}}),
+    )
+    settings = settings_factory(
+        velocity_threshold=10.0, velocity_threshold_overrides={"youtube": 500.0}
+    )
+    conn = _seeded_conn(settings)
+    # 40/hr: below the youtube platform override (500) but above the
+    # category override (5) -- must alert only because of the category override.
+    _insert_snapshot(conn, "t3_g", BASE, 10.0, poll_run_id="run-1", platform="youtube")
+    _insert_snapshot(conn, "t3_g", BASE + timedelta(hours=1), 50.0, poll_run_id="run-2", platform="youtube")
+    _insert_classification(conn, "t3_g", category="credential_theft")
+    conn.close()
+
+    result = run_scoring(settings)
+
+    assert result.alerts_written == 1

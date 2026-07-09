@@ -196,6 +196,7 @@
             <th class="sortable-th" data-sort-key="severity">Severity</th>
             <th class="num sortable-th" data-sort-key="velocity">Velocity</th>
             <th>QA status</th>
+            <th>Incident</th>
             <th>Summary</th>
             <th>Poster</th>
             <th>Posted</th>
@@ -205,7 +206,7 @@
           </tr>
         </thead>
         <tbody id="alerts-body">
-          <tr><td colspan="12" class="empty-state">Loading…</td></tr>
+          <tr><td colspan="13" class="empty-state">Loading…</td></tr>
         </tbody>
       </table>
     </div>
@@ -264,6 +265,21 @@
         pattern combination. Updates live as you edit above, before you save.
       </p>
       <div id="effective-terms-preview" class="effective-terms-preview"></div>
+    </div>
+
+    <div class="card">
+      <h2>Escalation criteria</h2>
+      <p class="source-picker-caption">
+        Per-category: whether it requires human QA before an alert is trusted, an optional
+        velocity-threshold override (blank = use the platform/global default), and a
+        first-response playbook. Changes here affect the next <code>radar score</code> run,
+        CLI or dashboard-triggered.
+      </p>
+      <div id="escalation-criteria-list"><p class="empty-state">Loading…</p></div>
+      <div class="settings-save-row">
+        <button type="button" id="save-escalation-criteria-btn">Save escalation criteria</button>
+        <span id="escalation-criteria-status" class="collection-status" role="status"></span>
+      </div>
     </div>
   </section>
 </main>

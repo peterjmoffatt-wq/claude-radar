@@ -8,22 +8,31 @@ from fastapi import FastAPI, HTTPException
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from radar.cluster import get_clusters
+from radar.brief import BriefFacts, generate_exec_brief, generate_incident_report
+from radar.cluster import ClusterSummary, get_clusters
 from radar.collect import run_collection, source_availability
 from radar.config import (
     MAX_WATCHLIST_ITEMS,
     effective_terms,
     get_settings,
+    load_escalation_criteria,
     load_search_terms,
+    save_escalation_criteria,
     save_search_terms,
 )
 from radar.db import (
     count_advertisements,
     get_alerts,
+    get_cluster_brief,
     get_connection,
+    get_incident_timeline,
     get_unscored_pain_points,
     init_db,
     resolve_alert,
+    save_cluster_brief,
+    save_exec_brief,
+    save_incident_report,
+    transition_incident,
 )
 from radar.leadtime import compute_lead_times, summarize_lead_times
 
@@ -69,8 +78,38 @@ def _alert_dict(row: tuple) -> dict:
         "score",
         "shares",
         "created_at",
+        "incident_status",
+        "exec_brief",
+        "exec_brief_generated_at",
+        "incident_report",
+        "incident_report_generated_at",
     )
     return dict(zip(keys, row))
+
+
+def _facts_from_alert(alert: dict) -> BriefFacts:
+    return BriefFacts(
+        subject=f"{alert['platform']} alert",
+        category=alert["category"],
+        severity=alert["severity"],
+        issue_summary=alert["issue_summary"],
+        platforms=[alert["platform"]],
+        velocity=alert["velocity"],
+        matched_term=alert.get("matched_term"),
+    )
+
+
+def _facts_from_cluster(cluster: ClusterSummary) -> BriefFacts:
+    category = cluster.cluster_key.split(":", 1)[0]
+    return BriefFacts(
+        subject=cluster.label,
+        category=category,
+        severity=cluster.max_severity,
+        issue_summary=cluster.representative_issue_summary,
+        platforms=cluster.platforms,
+        member_count=cluster.alert_count,
+        episode_count=cluster.episode_count,
+    )
 
 
 @app.get("/api/alerts")
@@ -89,10 +128,16 @@ def api_alerts(
 def api_clusters() -> list[dict]:
     conn = _connect()
     try:
-        clusters = get_clusters(conn)
+        settings = get_settings()
+        clusters = get_clusters(conn, recurrence_gap_hours=settings.recurrence_gap_hours)
+        result = []
+        for c in clusters:
+            d = c.__dict__.copy()
+            d["brief"] = get_cluster_brief(conn, c.cluster_key)
+            result.append(d)
     finally:
         conn.close()
-    return [c.__dict__ for c in clusters]
+    return result
 
 
 @app.get("/api/watching")
@@ -246,11 +291,135 @@ def api_review(post_id: str, body: ReviewDecision) -> dict:
     conn = _connect()
     try:
         changed = resolve_alert(conn, post_id, body.decision)
+        if changed and body.decision == "rejected":
+            # A rejected alert isn't a real incident to keep working --
+            # independent of qa_status, so this is a separate transition, not
+            # a side effect baked into resolve_alert() itself.
+            transition_incident(conn, post_id, "false_positive", note="Auto-closed: QA rejected")
     finally:
         conn.close()
     if not changed:
         raise HTTPException(status_code=404, detail=f"No pending alert found for {post_id}")
     return {"post_id": post_id, "qa_status": body.decision}
+
+
+IncidentStatus = Literal["open", "acknowledged", "mitigating", "resolved", "false_positive"]
+
+
+class IncidentTransition(BaseModel):
+    status: IncidentStatus
+    note: str | None = None
+
+
+@app.post("/api/alerts/{post_id}/transition")
+def api_alert_transition(post_id: str, body: IncidentTransition) -> dict:
+    """Moves an alert through its incident lifecycle -- independent of
+    qa_status (see transition_incident()'s docstring).
+    """
+    conn = _connect()
+    try:
+        changed = transition_incident(conn, post_id, body.status, note=body.note)
+    finally:
+        conn.close()
+    if not changed:
+        raise HTTPException(status_code=404, detail=f"No alert found for {post_id}")
+    return {"post_id": post_id, "incident_status": body.status}
+
+
+@app.get("/api/alerts/{post_id}/timeline")
+def api_alert_timeline(post_id: str) -> list[dict]:
+    conn = _connect()
+    try:
+        events = get_incident_timeline(conn, post_id)
+    finally:
+        conn.close()
+    return [
+        {"from_status": from_status, "to_status": to_status, "note": note, "created_at": created_at}
+        for from_status, to_status, note, created_at in events
+    ]
+
+
+def _get_one_alert(conn, post_id: str) -> dict:
+    rows = get_alerts(conn, post_id=post_id)
+    if not rows:
+        raise HTTPException(status_code=404, detail=f"No alert found for {post_id}")
+    return _alert_dict(rows[0])
+
+
+@app.post("/api/alerts/{post_id}/brief")
+def api_alert_brief(post_id: str) -> dict:
+    """Generates (or regenerates) this alert's exec brief and persists it, so
+    it isn't silently re-billed/regenerated every time the panel is opened.
+    """
+    conn = _connect()
+    try:
+        alert = _get_one_alert(conn, post_id)
+        brief = generate_exec_brief(get_settings(), _facts_from_alert(alert))
+        save_exec_brief(conn, post_id, brief)
+    finally:
+        conn.close()
+    return {"post_id": post_id, "brief": brief}
+
+
+@app.post("/api/clusters/{cluster_key}/brief")
+def api_cluster_brief(cluster_key: str) -> dict:
+    conn = _connect()
+    try:
+        settings = get_settings()
+        clusters = get_clusters(conn, recurrence_gap_hours=settings.recurrence_gap_hours)
+        cluster = next((c for c in clusters if c.cluster_key == cluster_key), None)
+        if cluster is None:
+            raise HTTPException(status_code=404, detail=f"No cluster found for {cluster_key}")
+        brief = generate_exec_brief(settings, _facts_from_cluster(cluster))
+        save_cluster_brief(conn, cluster_key, brief)
+    finally:
+        conn.close()
+    return {"cluster_key": cluster_key, "brief": brief}
+
+
+class IncidentReportRequest(BaseModel):
+    closing_note: str
+
+
+@app.post("/api/alerts/{post_id}/report")
+def api_alert_report(post_id: str, body: IncidentReportRequest) -> dict:
+    conn = _connect()
+    try:
+        alert = _get_one_alert(conn, post_id)
+        timeline = get_incident_timeline(conn, post_id)
+        report_markdown = generate_incident_report(
+            get_settings(), _facts_from_alert(alert), timeline, body.closing_note
+        )
+        save_incident_report(conn, post_id, report_markdown)
+    finally:
+        conn.close()
+    return {"post_id": post_id, "report_markdown": report_markdown}
+
+
+class CategoryCriteria(BaseModel):
+    requires_qa: bool
+    velocity_threshold: float | None
+    response_template: str
+
+
+class EscalationCriteriaUpdate(BaseModel):
+    categories: dict[str, CategoryCriteria]
+
+
+@app.get("/api/escalation-criteria")
+def api_get_escalation_criteria() -> dict:
+    return {"categories": load_escalation_criteria()}
+
+
+@app.put("/api/escalation-criteria")
+def api_update_escalation_criteria(body: EscalationCriteriaUpdate) -> dict:
+    """Persists per-category QA/velocity/playbook criteria to
+    config/escalation_criteria.yaml -- also changes what `radar score` uses,
+    not just dashboard views.
+    """
+    updates = {category: fields.model_dump() for category, fields in body.categories.items()}
+    updated = save_escalation_criteria(updates)
+    return {"categories": updated}
 
 
 # Mounted last so the /api/* routes above take precedence over this catch-all.

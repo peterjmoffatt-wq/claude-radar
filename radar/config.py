@@ -8,8 +8,11 @@ import yaml
 from pydantic import model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+from radar.models import PainCategory
+
 DEFAULT_SEARCH_TERMS_PATH = Path("config/search_terms.yaml")
 DEFAULT_KNOWN_INCIDENTS_PATH = Path("config/known_incidents.yaml")
+DEFAULT_ESCALATION_CRITERIA_PATH = Path("config/escalation_criteria.yaml")
 
 # Applies to each of the terms/clients/risk_patterns lists independently --
 # enforced in the API layer (radar/api.py), not here, so this stays a plain
@@ -43,6 +46,68 @@ DEFAULT_RISK_PATTERNS = [
     "data exfiltration",
 ]
 
+_ESCALATION_CRITERIA_HEADER = (
+    "# Per-category escalation criteria: whether it requires human QA, an\n"
+    "# optional velocity-threshold override, and a first-response playbook.\n"
+    "# Dashboard-editable (Settings tab) -- see radar/config.py.\n"
+)
+
+# Seeds config/escalation_criteria.yaml the first time it's saved, and fills
+# in any category missing from an already-saved file (e.g. a category added
+# to PainCategory after the file was last written). requires_qa defaults
+# match this project's original hardcoded HUMAN_QA_CATEGORIES list
+# (abuse/credential_theft/safety) -- migrating to this file changes nothing
+# about existing behavior until someone edits it from the dashboard.
+DEFAULT_ESCALATION_CRITERIA: dict[str, dict[str, Any]] = {
+    "api_abuse": {
+        "requires_qa": False,
+        "velocity_threshold": None,
+        "response_template": "Confirm the abuse pattern (rate limits, scripted misuse) with "
+        "eng before any public response. Not customer-facing until confirmed.",
+    },
+    "product_bug": {
+        "requires_qa": False,
+        "velocity_threshold": None,
+        "response_template": "Reproduce with eng, get a fix/workaround ETA, then respond with "
+        "what's confirmed -- avoid speculating on cause publicly.",
+    },
+    "ux_confusion": {
+        "requires_qa": False,
+        "velocity_threshold": None,
+        "response_template": "Low urgency unless velocity is high. A short clarifying reply "
+        "or docs link is usually enough.",
+    },
+    "messaging_gap": {
+        "requires_qa": False,
+        "velocity_threshold": None,
+        "response_template": "Loop in Comms/PMM -- usually a documentation or "
+        "expectation-setting gap, not a bug.",
+    },
+    "credential_theft": {
+        "requires_qa": True,
+        "velocity_threshold": None,
+        "response_template": "Escalate to security immediately. Do not confirm specifics "
+        "publicly. Coordinate a private response with the reporter if possible.",
+    },
+    "abuse": {
+        "requires_qa": True,
+        "velocity_threshold": None,
+        "response_template": "Escalate to Trust & Safety. Do not engage publicly until T&S "
+        "has assessed scope and intent.",
+    },
+    "safety": {
+        "requires_qa": True,
+        "velocity_threshold": None,
+        "response_template": "Escalate immediately to Safety and executive channels. Treat "
+        "as highest priority until triaged.",
+    },
+    "other": {
+        "requires_qa": False,
+        "velocity_threshold": None,
+        "response_template": "Triage manually -- doesn't fit an existing category cleanly.",
+    },
+}
+
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
@@ -71,8 +136,9 @@ class Settings(BaseSettings):
     # enough real cross-platform volume to calibrate specific values against.
     velocity_threshold_overrides: dict[str, float] = {}
     raw_text_retention_days: int = 14
-    # Scoped to issue TYPES only -- never specific people or communities.
-    human_qa_categories: list[str] = ["abuse", "credential_theft", "safety"]
+    # A quiet gap longer than this starts a new "episode" when counting how
+    # many times a root-cause cluster has recurred (see radar/cluster.py).
+    recurrence_gap_hours: float = 48.0
 
     # Storage
     database_path: Path = Path("data/radar.db")
@@ -211,3 +277,64 @@ def load_known_incidents(path: Path = DEFAULT_KNOWN_INCIDENTS_PATH) -> list[dict
     with open(path, encoding="utf-8") as f:
         data = yaml.safe_load(f)
     return (data or {}).get("incidents", [])
+
+
+def load_escalation_criteria(
+    path: Path = DEFAULT_ESCALATION_CRITERIA_PATH,
+) -> dict[str, dict[str, Any]]:
+    """Every PainCategory value always gets a full {requires_qa,
+    velocity_threshold, response_template} entry -- saved values win, missing
+    ones (a category added after the file was last saved, or the file simply
+    not existing yet) fall back to DEFAULT_ESCALATION_CRITERIA.
+    """
+    if path.exists():
+        with open(path, encoding="utf-8") as f:
+            data = yaml.safe_load(f)
+        saved = (data or {}).get("categories", {})
+    else:
+        saved = {}
+    return {
+        category.value: {**DEFAULT_ESCALATION_CRITERIA[category.value], **saved.get(category.value, {})}
+        for category in PainCategory
+    }
+
+
+def save_escalation_criteria(
+    updates: dict[str, dict[str, Any]], path: Path = DEFAULT_ESCALATION_CRITERIA_PATH
+) -> dict[str, dict[str, Any]]:
+    """Merges `updates` (keyed by PainCategory value, each a partial
+    {requires_qa, velocity_threshold, response_template}) into the
+    currently-saved criteria and writes it back -- same merge-on-save shape as
+    save_search_terms(), so a caller updating one category's fields doesn't
+    need to resend every other category's row.
+    """
+    current = load_escalation_criteria(path)
+    for category_value, fields in updates.items():
+        current.setdefault(category_value, dict(DEFAULT_ESCALATION_CRITERIA.get(category_value, {})))
+        current[category_value].update(fields)
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(path, "w", encoding="utf-8") as f:
+        f.write(_ESCALATION_CRITERIA_HEADER)
+        yaml.safe_dump({"categories": current}, f, sort_keys=False, default_flow_style=False)
+    return current
+
+
+def category_requires_qa(criteria: dict[str, dict[str, Any]], category: str) -> bool:
+    return bool(criteria.get(category, {}).get("requires_qa", False))
+
+
+def effective_velocity_threshold(
+    settings: "Settings", criteria: dict[str, dict[str, Any]], platform: str, category: str
+) -> float:
+    """Precedence: a category-specific override (escalation_criteria.yaml,
+    dashboard-editable) wins over a platform-specific override
+    (velocity_threshold_overrides, env-only) wins over the global default.
+    Category-driven escalation urgency is the more intentional signal this
+    feature is about; the platform override is a data-normalization default
+    (YouTube views vs. Reddit upvotes), a separate, orthogonal concern.
+    """
+    category_override = criteria.get(category, {}).get("velocity_threshold")
+    if category_override is not None:
+        return float(category_override)
+    return settings.velocity_threshold_for(platform)

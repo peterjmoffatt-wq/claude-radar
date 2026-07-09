@@ -1,0 +1,10 @@
+{
+  "id": "msg_01BRIEF002",
+  "type": "message",
+  "role": "assistant",
+  "model": "claude-haiku-4-5-20251001",
+  "content": [],
+  "stop_reason": "end_turn",
+  "stop_sequence": null,
+  "usage": {"input_tokens": 180, "output_tokens": 0}
+}

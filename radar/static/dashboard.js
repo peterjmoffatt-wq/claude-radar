@@ -16,6 +16,32 @@
     low: { dot: "good", label: "Low" },
   };
 
+  // Incident lifecycle -- independent of qa_status (see radar/db.py's
+  // transition_incident()). Only 4 dot colors exist (good/warning/critical/
+  // muted); acknowledged and mitigating share "warning" since both just mean
+  // "someone's actively on it," distinguished by label, not color.
+  const INCIDENT_META = {
+    open: { dot: "critical", label: "Open" },
+    acknowledged: { dot: "warning", label: "Acknowledged" },
+    mitigating: { dot: "warning", label: "Mitigating" },
+    resolved: { dot: "good", label: "Resolved" },
+    false_positive: { dot: "muted", label: "False positive" },
+  };
+
+  // The next logical forward action(s) offered from each incident state --
+  // "false_positive" is a manual escape hatch (or the automatic QA-reject
+  // outcome), not something to suggest as a "next" step to click toward.
+  const INCIDENT_NEXT_ACTIONS = {
+    open: [{ status: "acknowledged", label: "Acknowledge" }],
+    acknowledged: [
+      { status: "mitigating", label: "Start mitigating" },
+      { status: "resolved", label: "Resolve" },
+    ],
+    mitigating: [{ status: "resolved", label: "Resolve" }],
+    resolved: [],
+    false_positive: [],
+  };
+
   // Platform identity = hue + shape, not hue alone (see dashboard.css for the
   // full history of why 6 mutually-safe, non-red/orange/green hues don't
   // fit). Only 4 validated hues; Reddit/YouTube share one (circle/diamond)
@@ -165,11 +191,17 @@
   // hue for every bar, per the dataviz method (color re-encoding an already
   // axis-labeled identity is the anti-pattern, not the goal).
 
+  // Cached so the footprint graph's hub detail panel (rendered on click, long
+  // after this loads) can look up a hub's recurrence/brief data by
+  // cluster_key without a second round trip -- /api/clusters is small enough
+  // to just keep the last-loaded copy around.
+  let clusterSummaries = [];
+
   async function loadClusters() {
     const container = document.getElementById("clusters-chart");
     try {
-      const clusters = await fetchJSON("/api/clusters");
-      renderClusters(container, clusters);
+      clusterSummaries = await fetchJSON("/api/clusters");
+      renderClusters(container, clusterSummaries);
     } catch (err) {
       renderEmpty(container, "Failed to load clusters.");
     }
@@ -192,6 +224,13 @@
       label.className = "bar-label";
       label.textContent = c.label;
       label.title = c.label;
+      if (c.episode_count > 1) {
+        const recurring = document.createElement("span");
+        recurring.className = "recurring-tag";
+        recurring.textContent = `recurring ×${c.episode_count}`;
+        label.appendChild(document.createTextNode(" "));
+        label.appendChild(recurring);
+      }
 
       const value = document.createElement("div");
       value.className = "bar-value";
@@ -207,14 +246,19 @@
       const hit = document.createElement("div");
       hit.className = "bar-hit";
       hit.tabIndex = 0;
-      const tip = () =>
-        showTooltipForElement(hit, [
+      const tip = () => {
+        const lines = [
           ["Cluster", c.label],
           ["Alerts", c.alert_count],
           ["Max severity", (SEVERITY_META[c.max_severity] || {}).label || c.max_severity],
           ["Latest", formatDate(c.latest_triggered_at)],
-          ["Example", c.representative_issue_summary],
-        ]);
+        ];
+        if (c.episode_count > 1) {
+          lines.push(["Recurred", `${c.episode_count} times since ${formatDate(c.first_triggered_at)}`]);
+        }
+        lines.push(["Example", c.representative_issue_summary]);
+        showTooltipForElement(hit, lines);
+      };
       hit.addEventListener("mouseenter", tip);
       hit.addEventListener("mousemove", tip);
       hit.addEventListener("focus", tip);
@@ -655,6 +699,7 @@
       const angle = (ci / clusterList.length) * Math.PI * 2;
       const hub = {
         type: "hub",
+        key: cluster.key,
         label: cluster.label,
         platformCount: new Set(cluster.members.map((m) => m.platform)).size,
         memberCount: cluster.members.length,
@@ -773,6 +818,7 @@
       }
 
       let sameAuthorNodes = [];
+      const clusterSummary = n.type === "hub" ? clusterSummaries.find((c) => c.cluster_key === n.key) : null;
       if (n.type === "hub") {
         heading.textContent = n.label;
         addRow("Platforms", n.platformCount);
@@ -783,6 +829,12 @@
             ? `⚠ ${n.alertCount} active alert${n.alertCount === 1 ? "" : "s"}`
             : "No active alerts yet"
         );
+        if (clusterSummary && clusterSummary.episode_count > 1) {
+          addRow(
+            "Recurred",
+            `${clusterSummary.episode_count} times since ${formatDate(clusterSummary.first_triggered_at)}`
+          );
+        }
       } else {
         const m = n.member;
         heading.textContent = PLATFORM_LABEL[m.platform] || m.platform;
@@ -807,6 +859,42 @@
 
       detailPanel.appendChild(heading);
       detailPanel.appendChild(dl);
+
+      if (n.type === "hub" && n.key) {
+        const actions = document.createElement("div");
+        actions.className = "detail-actions";
+
+        const briefBtn = document.createElement("button");
+        briefBtn.type = "button";
+        briefBtn.className = "detail-jump-link";
+        briefBtn.textContent = clusterSummary && clusterSummary.brief ? "Regenerate brief" : "Generate brief";
+        actions.appendChild(briefBtn);
+        detailPanel.appendChild(actions);
+
+        const briefText = document.createElement("p");
+        briefText.className = "detail-brief";
+        if (clusterSummary && clusterSummary.brief) {
+          briefText.textContent = clusterSummary.brief;
+        }
+        detailPanel.appendChild(briefText);
+
+        briefBtn.addEventListener("click", async () => {
+          briefBtn.disabled = true;
+          briefBtn.textContent = "Generating…";
+          try {
+            const res = await fetch(`/api/clusters/${encodeURIComponent(n.key)}/brief`, { method: "POST" });
+            if (!res.ok) throw new Error("brief request failed");
+            const data = await res.json();
+            briefText.textContent = data.brief;
+            if (clusterSummary) clusterSummary.brief = data.brief;
+          } catch (err) {
+            briefText.textContent = "Failed to generate brief.";
+          } finally {
+            briefBtn.disabled = false;
+            briefBtn.textContent = "Regenerate brief";
+          }
+        });
+      }
 
       if (n.type === "satellite" && (n.member.url || n.member.post_id)) {
         const actions = document.createElement("div");
@@ -1452,7 +1540,7 @@
       tbody.textContent = "";
       const tr = document.createElement("tr");
       const td = document.createElement("td");
-      td.colSpan = 12;
+      td.colSpan = 13;
       td.className = "empty-state";
       td.textContent = "Failed to load alerts.";
       tr.appendChild(td);
@@ -1462,13 +1550,18 @@
     }
   }
 
+  // Tracks which alert's detail row is open across re-renders (every action
+  // inside it -- transition/brief/report -- reloads the whole table, same as
+  // the existing approve/reject flow) so it re-opens instead of collapsing.
+  let expandedAlertPostId = null;
+
   function renderAlerts(tbody, alerts) {
     tbody.textContent = "";
 
     if (!alerts.length) {
       const tr = document.createElement("tr");
       const td = document.createElement("td");
-      td.colSpan = 12;
+      td.colSpan = 13;
       td.className = "empty-state";
       td.textContent = "No alerts match these filters.";
       tr.appendChild(td);
@@ -1499,6 +1592,11 @@
       const qaTd = document.createElement("td");
       qaTd.appendChild(badge(STATUS_META[a.qa_status] || { dot: "muted", label: a.qa_status }));
 
+      const incidentTd = document.createElement("td");
+      incidentTd.appendChild(
+        badge(INCIDENT_META[a.incident_status] || { dot: "muted", label: a.incident_status })
+      );
+
       const summaryTd = document.createElement("td");
       summaryTd.className = "summary-cell";
       summaryTd.textContent = a.issue_summary;
@@ -1526,10 +1624,10 @@
       }
 
       const actionsTd = document.createElement("td");
-      if (a.qa_status === "pending") {
-        const actions = document.createElement("div");
-        actions.className = "actions";
+      const actions = document.createElement("div");
+      actions.className = "actions";
 
+      if (a.qa_status === "pending") {
         const approveBtn = document.createElement("button");
         approveBtn.className = "approve";
         approveBtn.textContent = "Approve";
@@ -1542,8 +1640,15 @@
 
         actions.appendChild(approveBtn);
         actions.appendChild(rejectBtn);
-        actionsTd.appendChild(actions);
       }
+
+      const detailsBtn = document.createElement("button");
+      detailsBtn.type = "button";
+      detailsBtn.setAttribute("aria-expanded", "false");
+      detailsBtn.textContent = "Details ▾";
+      detailsBtn.addEventListener("click", () => toggleAlertDetail(tr, a, detailsBtn));
+      actions.appendChild(detailsBtn);
+      actionsTd.appendChild(actions);
 
       tr.appendChild(platformTd);
       tr.appendChild(matchedTermTd);
@@ -1551,6 +1656,7 @@
       tr.appendChild(severityTd);
       tr.appendChild(velocityTd);
       tr.appendChild(qaTd);
+      tr.appendChild(incidentTd);
       tr.appendChild(summaryTd);
       tr.appendChild(posterTd);
       tr.appendChild(postedTd);
@@ -1558,6 +1664,10 @@
       tr.appendChild(postTd);
       tr.appendChild(actionsTd);
       tbody.appendChild(tr);
+
+      if (a.post_id === expandedAlertPostId) {
+        openAlertDetail(tr, a, detailsBtn);
+      }
     });
   }
 
@@ -1572,6 +1682,252 @@
       await loadAlerts();
     } catch (err) {
       window.alert("Failed to update review status.");
+    }
+  }
+
+  // -- incident detail row (lifecycle, timeline, exec brief, report) ----------
+
+  function downloadTextFile(filename, content, mimeType) {
+    const blob = new Blob([content], { type: mimeType });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = filename;
+    link.click();
+    URL.revokeObjectURL(url);
+  }
+
+  async function copyToClipboard(text, btn) {
+    try {
+      await navigator.clipboard.writeText(text);
+      const original = btn.textContent;
+      btn.textContent = "Copied!";
+      setTimeout(() => {
+        btn.textContent = original;
+      }, 1500);
+    } catch (err) {
+      window.alert("Failed to copy to clipboard.");
+    }
+  }
+
+  async function transitionIncident(postId, status, note) {
+    try {
+      const res = await fetch(`/api/alerts/${encodeURIComponent(postId)}/transition`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ status, note: note || null }),
+      });
+      if (!res.ok) throw new Error("transition request failed");
+      await loadAlerts();
+    } catch (err) {
+      window.alert("Failed to update incident status.");
+    }
+  }
+
+  async function loadIncidentTimeline(postId, listEl) {
+    try {
+      const events = await fetchJSON(`/api/alerts/${encodeURIComponent(postId)}/timeline`);
+      listEl.textContent = "";
+      if (!events.length) {
+        const li = document.createElement("li");
+        li.className = "empty-state";
+        li.textContent = "No status changes yet.";
+        listEl.appendChild(li);
+        return;
+      }
+      events.forEach((e) => {
+        const li = document.createElement("li");
+        const label = (INCIDENT_META[e.to_status] || {}).label || e.to_status;
+        li.textContent = `${formatDate(e.created_at)} — ${label}${e.note ? ": " + e.note : ""}`;
+        listEl.appendChild(li);
+      });
+    } catch (err) {
+      listEl.textContent = "";
+      const li = document.createElement("li");
+      li.className = "empty-state";
+      li.textContent = "Failed to load timeline.";
+      listEl.appendChild(li);
+    }
+  }
+
+  function buildIncidentDetailPanel(alert) {
+    const wrapper = document.createElement("div");
+    wrapper.className = "incident-detail-panel";
+
+    // -- lifecycle --
+    const lifecycle = document.createElement("div");
+    lifecycle.className = "incident-section";
+    const lifecycleHeading = document.createElement("h4");
+    lifecycleHeading.textContent = "Incident";
+    lifecycle.appendChild(lifecycleHeading);
+    lifecycle.appendChild(
+      badge(INCIDENT_META[alert.incident_status] || { dot: "muted", label: alert.incident_status })
+    );
+
+    const nextActions = INCIDENT_NEXT_ACTIONS[alert.incident_status] || [];
+    if (nextActions.length) {
+      const noteInput = document.createElement("textarea");
+      noteInput.className = "incident-note-input";
+      noteInput.rows = 2;
+      noteInput.placeholder = "Optional note for this transition...";
+      lifecycle.appendChild(noteInput);
+
+      const actionRow = document.createElement("div");
+      actionRow.className = "actions";
+      nextActions.forEach(({ status, label }) => {
+        const btn = document.createElement("button");
+        btn.type = "button";
+        if (status === "resolved") btn.className = "approve";
+        btn.textContent = label;
+        btn.addEventListener("click", () => transitionIncident(alert.post_id, status, noteInput.value.trim()));
+        actionRow.appendChild(btn);
+      });
+      lifecycle.appendChild(actionRow);
+    }
+    wrapper.appendChild(lifecycle);
+
+    // -- timeline --
+    const timeline = document.createElement("div");
+    timeline.className = "incident-section";
+    const timelineHeading = document.createElement("h4");
+    timelineHeading.textContent = "Timeline";
+    timeline.appendChild(timelineHeading);
+    const timelineList = document.createElement("ul");
+    timelineList.className = "incident-timeline";
+    timeline.appendChild(timelineList);
+    wrapper.appendChild(timeline);
+    loadIncidentTimeline(alert.post_id, timelineList);
+
+    // -- exec brief --
+    const briefSection = document.createElement("div");
+    briefSection.className = "incident-section";
+    const briefHeading = document.createElement("h4");
+    briefHeading.textContent = "Executive brief";
+    briefSection.appendChild(briefHeading);
+    const briefBtn = document.createElement("button");
+    briefBtn.type = "button";
+    briefBtn.textContent = alert.exec_brief ? "Regenerate brief" : "Generate brief";
+    briefSection.appendChild(briefBtn);
+    const briefText = document.createElement("p");
+    briefText.className = "detail-brief";
+    briefText.textContent = alert.exec_brief || "";
+    briefSection.appendChild(briefText);
+    briefBtn.addEventListener("click", async () => {
+      briefBtn.disabled = true;
+      briefBtn.textContent = "Generating…";
+      try {
+        const res = await fetch(`/api/alerts/${encodeURIComponent(alert.post_id)}/brief`, { method: "POST" });
+        if (!res.ok) throw new Error("brief request failed");
+        const data = await res.json();
+        briefText.textContent = data.brief;
+        alert.exec_brief = data.brief;
+      } catch (err) {
+        briefText.textContent = "Failed to generate brief.";
+      } finally {
+        briefBtn.disabled = false;
+        briefBtn.textContent = "Regenerate brief";
+      }
+    });
+    wrapper.appendChild(briefSection);
+
+    // -- post-incident report --
+    const reportSection = document.createElement("div");
+    reportSection.className = "incident-section";
+    const reportHeading = document.createElement("h4");
+    reportHeading.textContent = "Post-incident report";
+    reportSection.appendChild(reportHeading);
+
+    const closingNoteInput = document.createElement("textarea");
+    closingNoteInput.className = "incident-note-input";
+    closingNoteInput.rows = 2;
+    closingNoteInput.placeholder = "What should change so the next escalation is easier?";
+    reportSection.appendChild(closingNoteInput);
+
+    const reportActions = document.createElement("div");
+    reportActions.className = "actions";
+    const generateReportBtn = document.createElement("button");
+    generateReportBtn.type = "button";
+    generateReportBtn.textContent = alert.incident_report ? "Regenerate report" : "Generate report";
+    reportActions.appendChild(generateReportBtn);
+    reportSection.appendChild(reportActions);
+
+    const reportOutput = document.createElement("pre");
+    reportOutput.className = "incident-report-output";
+    reportOutput.textContent = alert.incident_report || "";
+    reportSection.appendChild(reportOutput);
+
+    const reportFileActions = document.createElement("div");
+    reportFileActions.className = "actions";
+    reportFileActions.hidden = !alert.incident_report;
+    const copyBtn = document.createElement("button");
+    copyBtn.type = "button";
+    copyBtn.textContent = "Copy";
+    copyBtn.addEventListener("click", () => copyToClipboard(reportOutput.textContent, copyBtn));
+    const downloadBtn = document.createElement("button");
+    downloadBtn.type = "button";
+    downloadBtn.textContent = "Download .md";
+    downloadBtn.addEventListener("click", () =>
+      downloadTextFile(`${alert.post_id}-incident-report.md`, reportOutput.textContent, "text/markdown")
+    );
+    reportFileActions.appendChild(copyBtn);
+    reportFileActions.appendChild(downloadBtn);
+    reportSection.appendChild(reportFileActions);
+
+    generateReportBtn.addEventListener("click", async () => {
+      generateReportBtn.disabled = true;
+      generateReportBtn.textContent = "Generating…";
+      try {
+        const res = await fetch(`/api/alerts/${encodeURIComponent(alert.post_id)}/report`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            closing_note: closingNoteInput.value.trim() || "No closing note provided.",
+          }),
+        });
+        if (!res.ok) throw new Error("report request failed");
+        const data = await res.json();
+        reportOutput.textContent = data.report_markdown;
+        alert.incident_report = data.report_markdown;
+        reportFileActions.hidden = false;
+      } catch (err) {
+        reportOutput.textContent = "Failed to generate report.";
+      } finally {
+        generateReportBtn.disabled = false;
+        generateReportBtn.textContent = "Regenerate report";
+      }
+    });
+    wrapper.appendChild(reportSection);
+
+    return wrapper;
+  }
+
+  function openAlertDetail(tr, alert, detailsBtn) {
+    expandedAlertPostId = alert.post_id;
+    detailsBtn.textContent = "Details ▴";
+    detailsBtn.setAttribute("aria-expanded", "true");
+    const detailTr = document.createElement("tr");
+    detailTr.className = "alert-detail-row";
+    const td = document.createElement("td");
+    td.colSpan = 13;
+    td.appendChild(buildIncidentDetailPanel(alert));
+    detailTr.appendChild(td);
+    tr.after(detailTr);
+  }
+
+  function closeAlertDetail(tr, detailsBtn) {
+    expandedAlertPostId = null;
+    detailsBtn.textContent = "Details ▾";
+    detailsBtn.setAttribute("aria-expanded", "false");
+    const next = tr.nextElementSibling;
+    if (next && next.classList.contains("alert-detail-row")) next.remove();
+  }
+
+  function toggleAlertDetail(tr, alert, detailsBtn) {
+    const next = tr.nextElementSibling;
+    if (next && next.classList.contains("alert-detail-row")) {
+      closeAlertDetail(tr, detailsBtn);
+    } else {
+      openAlertDetail(tr, alert, detailsBtn);
     }
   }
 
@@ -1946,12 +2302,127 @@
     }
   }
 
+  // -- escalation criteria (Settings tab) --------------------------------------
+
+  let escalationCriteria = {};
+
+  async function initEscalationCriteriaTab() {
+    const container = document.getElementById("escalation-criteria-list");
+    try {
+      const data = await fetchJSON("/api/escalation-criteria");
+      escalationCriteria = data.categories;
+      renderEscalationCriteriaEditor();
+    } catch (err) {
+      container.textContent = "";
+      const p = document.createElement("p");
+      p.className = "empty-state";
+      p.textContent = "Failed to load escalation criteria.";
+      container.appendChild(p);
+    }
+  }
+
+  function renderEscalationCriteriaEditor() {
+    const container = document.getElementById("escalation-criteria-list");
+    container.textContent = "";
+
+    ALL_CATEGORIES.forEach((category) => {
+      const criteria = escalationCriteria[category] || {
+        requires_qa: false,
+        velocity_threshold: null,
+        response_template: "",
+      };
+
+      const row = document.createElement("div");
+      row.className = "escalation-criteria-row";
+
+      const heading = document.createElement("div");
+      heading.className = "escalation-criteria-heading";
+
+      const title = document.createElement("span");
+      title.className = "escalation-criteria-title";
+      title.textContent = formatCategory(category);
+      heading.appendChild(title);
+
+      const qaLabel = document.createElement("label");
+      qaLabel.className = "escalation-criteria-qa";
+      const qaCheckbox = document.createElement("input");
+      qaCheckbox.type = "checkbox";
+      qaCheckbox.checked = !!criteria.requires_qa;
+      qaCheckbox.addEventListener("change", () => {
+        escalationCriteria[category] = { ...escalationCriteria[category], requires_qa: qaCheckbox.checked };
+      });
+      qaLabel.appendChild(qaCheckbox);
+      qaLabel.appendChild(document.createTextNode(" Requires human QA"));
+      heading.appendChild(qaLabel);
+
+      const thresholdLabel = document.createElement("label");
+      thresholdLabel.className = "escalation-criteria-threshold";
+      thresholdLabel.appendChild(document.createTextNode("Velocity override"));
+      const thresholdInput = document.createElement("input");
+      thresholdInput.type = "number";
+      thresholdInput.step = "any";
+      thresholdInput.placeholder = "default";
+      if (criteria.velocity_threshold !== null && criteria.velocity_threshold !== undefined) {
+        thresholdInput.value = criteria.velocity_threshold;
+      }
+      thresholdInput.addEventListener("input", () => {
+        const value = thresholdInput.value.trim();
+        escalationCriteria[category] = {
+          ...escalationCriteria[category],
+          velocity_threshold: value === "" ? null : Number(value),
+        };
+      });
+      thresholdLabel.appendChild(thresholdInput);
+      heading.appendChild(thresholdLabel);
+      row.appendChild(heading);
+
+      const templateInput = document.createElement("textarea");
+      templateInput.className = "escalation-criteria-template";
+      templateInput.rows = 2;
+      templateInput.value = criteria.response_template || "";
+      templateInput.addEventListener("input", () => {
+        escalationCriteria[category] = {
+          ...escalationCriteria[category],
+          response_template: templateInput.value,
+        };
+      });
+      row.appendChild(templateInput);
+
+      container.appendChild(row);
+    });
+  }
+
+  async function saveEscalationCriteria() {
+    const button = document.getElementById("save-escalation-criteria-btn");
+    const status = document.getElementById("escalation-criteria-status");
+    button.disabled = true;
+    status.textContent = "Saving…";
+    try {
+      const res = await fetch("/api/escalation-criteria", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ categories: escalationCriteria }),
+      });
+      if (!res.ok) throw new Error("save failed");
+      const data = await res.json();
+      escalationCriteria = data.categories;
+      renderEscalationCriteriaEditor();
+      status.textContent = "Saved -- radar score (CLI or dashboard) will use this too.";
+    } catch (err) {
+      status.textContent = "Failed to save -- check server logs.";
+    } finally {
+      button.disabled = false;
+    }
+  }
+
   // -- init -------------------------------------------------------------------
 
   initTabs();
   initSourcePicker();
   initSettingsTab();
+  initEscalationCriteriaTab();
   document.getElementById("save-watchlist-btn").addEventListener("click", saveWatchlist);
+  document.getElementById("save-escalation-criteria-btn").addEventListener("click", saveEscalationCriteria);
   document.getElementById("run-collection-btn").addEventListener("click", runCollection);
 
   document.getElementById("filter-status").addEventListener("change", loadAlerts);
