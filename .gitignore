@@ -9,6 +9,8 @@ dist/
 .env
 data/*.db
 data/*.db-journal
+data/*.db-shm
+data/*.db-wal
 !data/.gitkeep
 
 .DS_Store

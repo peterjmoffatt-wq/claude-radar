@@ -7,6 +7,7 @@ from radar.config import (
     DEFAULT_ESCALATION_CRITERIA,
     DEFAULT_MODEL_TIERS,
     DEFAULT_RISK_PATTERNS,
+    DEFAULT_SCHEDULE,
     MAX_EFFECTIVE_TERMS,
     Settings,
     category_requires_qa,
@@ -16,10 +17,12 @@ from radar.config import (
     load_escalation_criteria,
     load_known_incidents,
     load_model_tiers,
+    load_schedule_config,
     load_search_terms,
     protection_tier_for,
     save_escalation_criteria,
     save_model_tiers,
+    save_schedule_config,
     save_search_terms,
 )
 
@@ -278,6 +281,29 @@ def test_save_model_tiers_merges_and_preserves_other_models(tmp_path):
     assert reloaded["claude_haiku"]["velocity_threshold"] == 50.0
     assert reloaded["claude_haiku"]["protection_tier"] == "standard"  # untouched
     assert reloaded["claude_opus"] == DEFAULT_MODEL_TIERS["claude_opus"]
+
+
+def test_load_schedule_config_returns_defaults_when_file_missing(tmp_path):
+    schedule = load_schedule_config(path=tmp_path / "does_not_exist.yaml")
+    assert schedule == DEFAULT_SCHEDULE
+    assert schedule["enabled"] is False
+    assert schedule["interval_seconds"] == 7200
+
+
+def test_save_schedule_config_merges_and_persists(tmp_path):
+    yaml_path = tmp_path / "schedule.yaml"
+
+    save_schedule_config({"enabled": True}, path=yaml_path)
+    reloaded = load_schedule_config(path=yaml_path)
+
+    assert reloaded["enabled"] is True
+    assert reloaded["interval_seconds"] == 7200  # untouched default
+
+    save_schedule_config({"interval_seconds": 3600}, path=yaml_path)
+    reloaded = load_schedule_config(path=yaml_path)
+
+    assert reloaded["enabled"] is True  # earlier save preserved
+    assert reloaded["interval_seconds"] == 3600
 
 
 def test_protection_tier_for():

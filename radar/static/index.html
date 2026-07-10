@@ -260,14 +260,35 @@
         <h2>Sources</h2>
         <p class="source-picker-caption">
           Choose which platforms to search, then run a live collection pass. Platforms without
-          credentials configured in <code>.env</code> are skipped, not failed. In production this
-          runs on a schedule (e.g. a cron/systemd timer calling <code>radar collect</code>) rather
-          than a manual click -- this button is the same operation, triggered on demand.
+          credentials configured in <code>.env</code> are skipped, not failed. This button is
+          the same operation the automatic scheduler below runs on its own.
         </p>
         <div id="source-checkboxes" class="source-checkboxes"><p class="empty-state">Loading…</p></div>
         <div class="source-picker-actions">
           <button type="button" id="run-collection-btn" class="run-collection">Run collection</button>
           <span id="collection-status" class="collection-status" role="status"></span>
+        </div>
+      </div>
+
+      <div class="card">
+        <h2>Automatic collection</h2>
+        <p class="source-picker-caption">
+          Runs the same collection pass as the button above, on its own, from inside
+          <code>radar serve</code> -- no external cron job needed. Off by default so running the
+          dashboard never pings anyone's API without you deciding to. Checks every few seconds
+          for a change here, so toggling it or editing the interval takes effect immediately,
+          no restart.
+        </p>
+        <label class="schedule-enabled-row">
+          <input type="checkbox" id="schedule-enabled-checkbox" />
+          Automatically collect every
+          <input type="number" id="schedule-interval-input" min="0.25" step="0.25" />
+          hours
+        </label>
+        <p id="schedule-last-checked" class="source-picker-caption"></p>
+        <div class="settings-save-row">
+          <button type="button" id="save-schedule-btn">Save schedule</button>
+          <span id="schedule-status" class="collection-status" role="status"></span>
         </div>
       </div>
     </div>

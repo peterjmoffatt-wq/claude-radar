@@ -19,10 +19,12 @@ from radar.config import (
     get_settings,
     load_escalation_criteria,
     load_model_tiers,
+    load_schedule_config,
     load_search_terms,
     protection_tier_for,
     save_escalation_criteria,
     save_model_tiers,
+    save_schedule_config,
     save_search_terms,
 )
 from radar.db import (
@@ -33,6 +35,7 @@ from radar.db import (
     get_cluster_brief,
     get_connection,
     get_incident_timeline,
+    get_last_collected_at,
     get_snapshot_history,
     get_unscored_pain_points,
     init_db,
@@ -624,6 +627,33 @@ def api_update_model_tiers(body: ModelTiersUpdate) -> dict:
     return {"models": updated}
 
 
+class ScheduleUpdate(BaseModel):
+    enabled: bool
+    interval_seconds: int
+
+
+@app.get("/api/schedule")
+def api_get_schedule() -> dict:
+    conn = _connect()
+    try:
+        last_collected_at = get_last_collected_at(conn)
+    finally:
+        conn.close()
+    return {
+        **load_schedule_config(),
+        "last_collected_at": last_collected_at.isoformat() if last_collected_at else None,
+    }
+
+
+@app.put("/api/schedule")
+def api_update_schedule(body: ScheduleUpdate) -> dict:
+    """Persists radar serve's background-scheduler on/off + interval to
+    config/schedule.yaml -- radar/scheduler.py's loop re-reads this file every
+    tick, so this takes effect within CHECK_INTERVAL_SECONDS, no restart.
+    """
+    return save_schedule_config({"enabled": body.enabled, "interval_seconds": body.interval_seconds})
+
+
 # Mounted last so the /api/* routes above take precedence over this catch-all.
 app.mount("/", StaticFiles(directory=STATIC_DIR, html=True), name="static")
 
@@ -631,6 +661,9 @@ app.mount("/", StaticFiles(directory=STATIC_DIR, html=True), name="static")
 def main() -> None:
     import uvicorn
 
+    from radar.scheduler import start_scheduler_thread
+
+    start_scheduler_thread(get_settings())
     uvicorn.run(app, host="127.0.0.1", port=8000)
 
 

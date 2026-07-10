@@ -9,12 +9,13 @@ versus when it went viral. Built as a portfolio/interview prototype.
 **Status: Phase 9 of 9 (all phases scaffolded), plus a Mastodon source and a full
 incident-response layer added afterward: lifecycle tracking, Claude-drafted executive briefs
 and post-incident reports, recurrence detection, dashboard-editable escalation criteria and
-per-model protection tiers, a client × risk-pattern targeted-attack watchlist, and a
-Kanban-style Board where claiming an alert and dragging it through its lifecycle
-auto-generates a Claude-written Course of Action with an actionable, per-category checklist.**
-Collectors for Reddit, YouTube, Hacker News, Stack Overflow, GitHub Issues, and Mastodon write
-a time series of post snapshots to SQLite; a Claude-based classifier labels pain points; a
-scorer turns accelerating pain points into alerts; a human QA gate reviews sensitive
+per-model protection tiers, a client × risk-pattern targeted-attack watchlist, a Kanban-style
+Board where claiming an alert and dragging it through its lifecycle auto-generates a
+Claude-written Course of Action with an actionable, per-category checklist, and a background
+scheduler that runs collection on its own, on a dashboard-editable interval, once you turn it
+on.** Collectors for Reddit, YouTube, Hacker News, Stack Overflow, GitHub Issues, and Mastodon
+write a time series of post snapshots to SQLite; a Claude-based classifier labels pain points;
+a scorer turns accelerating pain points into alerts; a human QA gate reviews sensitive
 categories; a clustering step groups alerts by root cause and flags recurrence; a FastAPI +
 static dashboard surfaces all of it (an interactive, draggable cross-platform footprint graph
 on the home tab with a one-click "send to Alerts" override for anything worth tracking that
@@ -167,6 +168,18 @@ lead-time metric reads.
 `run_collection()` also accepts an optional `sources` filter (a subset of configured source
 names) — `radar collect` doesn't use it (always polls everything configured), but the
 dashboard's source picker does, via `POST /api/collect` (see "Serving the dashboard" below).
+
+**Running it automatically**: `radar serve` starts a background thread
+(`radar/scheduler.py`) that calls `run_collection()` on its own, on an interval -- no external
+cron/systemd timer required, though either still works if you'd rather run collection outside
+the dashboard process. Off by default (same "opt-in, not because it costs anything" convention
+as `ENABLE_HACKERNEWS_SOURCE`), so cloning this repo and running `radar serve` never pings
+anyone's API until you turn it on. Toggle and interval live in the dashboard's Settings →
+Sources sub-tab, backed by `config/schedule.yaml` (`GET`/`PUT /api/schedule` in `radar/api.py`)
+-- the scheduler thread re-reads that file every 30s, so a dashboard edit takes effect within
+seconds, not on the next multi-hour wakeup or a process restart. It only ever calls
+`run_collection()`, never `radar classify`/`radar score` -- those still call the paid Anthropic
+API and stay deliberate, manual actions (see "Running the classifier" below).
 
 **Tuning the watchlist**: edit `config/search_terms.yaml` directly, or use the dashboard's
 Settings tab (writes to the same file, so `radar collect` picks up dashboard edits too — see
@@ -368,9 +381,10 @@ no server round-trip to switch) so each section is reachable without scrolling p
   already configured in `.env`, plus disabled "Coming soon" entries for
   Discord/LinkedIn/TikTok/Threads (see "Platforms not included"), with a **Run collection**
   button that `POST`s to `/api/collect` and triggers a real, live collection pass for just the
-  checked sources. In production, collection runs on a schedule (e.g. a cron/systemd timer
-  calling `radar collect`) rather than a manual click — this button is the same underlying
-  operation, triggered on demand for the dashboard/demo case.
+  checked sources on demand. Below it, an **Automatic collection** card: an on/off toggle and
+  an interval (in hours) for the background scheduler described under "Running it
+  automatically" above, plus a "Last checked" timestamp so it's obvious at a glance whether
+  it's actually running, not just switched on.
 - **Watchlist** — three editable lists (Search terms, Watched clients, Risk patterns — see
   "Tuning the watchlist" above) with a live "effective query preview" and a single **Save
   watchlist** button that writes to `config/search_terms.yaml` (so CLI runs pick it up too, not
@@ -491,6 +505,13 @@ network access required for any of it.
 - **`docs/index.html`:** a standalone, self-contained overview/pitch page (real screenshots of
   the running dashboard, embedded fonts, no build step) for sharing this project outside the
   running app itself — served via GitHub Pages independent of anything in `radar/`.
+- **Scheduler round:** `radar/scheduler.py` — a background thread `radar serve` starts (never
+  started by tests, since it's only wired into the real `main()`/`radar serve` entry point, not
+  app creation itself) that calls `run_collection()` on its own once enabled, on a
+  dashboard-editable interval (`config/schedule.yaml`, `GET`/`PUT /api/schedule`). Off by
+  default; seeds "last run" from the real `collected_at` history so a restart doesn't
+  immediately re-fire a pass that already happened. Scoped to collection only — classification
+  and scoring stay manual, deliberate actions.
 
 ## Data model
 

@@ -14,6 +14,7 @@ DEFAULT_SEARCH_TERMS_PATH = Path("config/search_terms.yaml")
 DEFAULT_KNOWN_INCIDENTS_PATH = Path("config/known_incidents.yaml")
 DEFAULT_ESCALATION_CRITERIA_PATH = Path("config/escalation_criteria.yaml")
 DEFAULT_MODEL_TIERS_PATH = Path("config/model_tiers.yaml")
+DEFAULT_SCHEDULE_PATH = Path("config/schedule.yaml")
 
 # Applies to each of the terms/clients/risk_patterns lists independently --
 # enforced in the API layer (radar/api.py), not here, so this stays a plain
@@ -123,6 +124,23 @@ DEFAULT_ESCALATION_CRITERIA: dict[str, dict[str, Any]] = {
         "response_template": "Triage manually -- doesn't fit an existing category cleanly.",
         "action_items": ["Log manual triage"],
     },
+}
+
+_SCHEDULE_HEADER = (
+    "# Automatic collection: whether radar serve's background scheduler is on,\n"
+    "# and how often it polls (seconds). Off by default -- same \"opt-in, not\n"
+    "# because it costs anything\" convention as ENABLE_HACKERNEWS_SOURCE/\n"
+    "# ENABLE_STACKOVERFLOW_SOURCE. Dashboard-editable (Settings tab) -- see\n"
+    "# radar/config.py and radar/scheduler.py.\n"
+)
+
+# 7200s (2h) matches Settings.poll_interval_seconds's own default -- the two
+# are independent (this drives real recurring execution; that one is only a
+# first-run lookback fallback in radar/collect.py), but there's no reason to
+# start them out of sync.
+DEFAULT_SCHEDULE: dict[str, Any] = {
+    "enabled": False,
+    "interval_seconds": 7200,
 }
 
 _MODEL_TIERS_HEADER = (
@@ -399,6 +417,37 @@ def save_model_tiers(
     with open(path, "w", encoding="utf-8") as f:
         f.write(_MODEL_TIERS_HEADER)
         yaml.safe_dump({"models": current}, f, sort_keys=False, default_flow_style=False)
+    return current
+
+
+def load_schedule_config(path: Path = DEFAULT_SCHEDULE_PATH) -> dict[str, Any]:
+    """{enabled, interval_seconds} -- saved values win, missing ones (file
+    doesn't exist yet, or a key was added after it was last saved) fall back
+    to DEFAULT_SCHEDULE. Read fresh on every call (radar/scheduler.py's loop
+    re-reads this every tick) rather than cached at process startup, so a
+    dashboard edit takes effect without restarting `radar serve`.
+    """
+    if path.exists():
+        with open(path, encoding="utf-8") as f:
+            saved = yaml.safe_load(f) or {}
+    else:
+        saved = {}
+    return {**DEFAULT_SCHEDULE, **saved}
+
+
+def save_schedule_config(
+    updates: dict[str, Any], path: Path = DEFAULT_SCHEDULE_PATH
+) -> dict[str, Any]:
+    """Merges `updates` into the currently-saved schedule and writes it back --
+    same merge-on-save shape as save_model_tiers().
+    """
+    current = load_schedule_config(path)
+    current.update(updates)
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(path, "w", encoding="utf-8") as f:
+        f.write(_SCHEDULE_HEADER)
+        yaml.safe_dump(current, f, sort_keys=False, default_flow_style=False)
     return current
 
 

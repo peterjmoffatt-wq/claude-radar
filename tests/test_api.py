@@ -714,8 +714,18 @@ def test_api_clusters_includes_recurrence_and_brief_fields(client):
     assert body["brief"] is None
 
 
-def test_api_get_escalation_criteria_returns_defaults(client):
+def test_api_get_escalation_criteria_returns_defaults(tmp_path, monkeypatch, client):
     test_client, _settings = client
+    # Isolated from config/escalation_criteria.yaml's real, dashboard-editable
+    # contents (which this project's own Settings tab is meant to let drift
+    # from these Python-side defaults) -- a nonexistent tmp path always falls
+    # back to DEFAULT_ESCALATION_CRITERIA, which is what this test actually
+    # checks.
+    yaml_path = tmp_path / "escalation_criteria.yaml"
+    monkeypatch.setattr(
+        api_module, "load_escalation_criteria", lambda: config_module.load_escalation_criteria(yaml_path)
+    )
+
     response = test_client.get("/api/escalation-criteria")
 
     assert response.status_code == 200
@@ -1056,8 +1066,16 @@ def test_api_alert_transition_to_resolved_succeeds_after_action_logged(client, l
     assert alerts[0]["resolved_at"] is not None
 
 
-def test_api_promote_creates_an_alert_from_a_watching_post(client):
+def test_api_promote_creates_an_alert_from_a_watching_post(tmp_path, monkeypatch, client):
     test_client, settings = client
+    # Isolated from config/escalation_criteria.yaml's real contents for the
+    # same reason as test_api_get_escalation_criteria_returns_defaults above --
+    # this test wants ux_confusion's DEFAULT_ESCALATION_CRITERIA requires_qa
+    # (False), not whatever a real dashboard edit last saved.
+    yaml_path = tmp_path / "escalation_criteria.yaml"
+    monkeypatch.setattr(
+        api_module, "load_escalation_criteria", lambda: config_module.load_escalation_criteria(yaml_path)
+    )
     conn = get_connection(settings.database_path)
     init_db(conn)
     _seed_classification_only(conn, "t3_promote", is_pain_point=True, category="ux_confusion")
@@ -1142,3 +1160,54 @@ def test_api_alert_claim_returns_404_for_unknown_post(client):
     response = test_client.post("/api/alerts/t3_missing/claim", json={"claimed_by": "Alex"})
 
     assert response.status_code == 404
+
+
+def test_api_get_schedule_returns_defaults_and_last_collected_at(client):
+    test_client, settings = client
+    conn = get_connection(settings.database_path)
+    init_db(conn)
+    conn.execute(
+        "INSERT INTO snapshots (post_id, platform, poll_run_id, collected_at, created_at, url, "
+        "search_pass) VALUES "
+        "('t3_seed', 'reddit', 'run-1', '2024-01-01T00:00:00+00:00', '2024-01-01T00:00:00+00:00', "
+        "'https://x/t3_seed', 'top')"
+    )
+    conn.commit()
+    conn.close()
+
+    response = test_client.get("/api/schedule")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["enabled"] is False
+    assert body["interval_seconds"] == 7200
+    assert body["last_collected_at"] == "2024-01-01T00:00:00+00:00"
+
+
+def test_api_get_schedule_last_collected_at_null_when_no_data(client):
+    test_client, _settings = client
+
+    response = test_client.get("/api/schedule")
+
+    assert response.status_code == 200
+    assert response.json()["last_collected_at"] is None
+
+
+def test_api_put_schedule_persists(tmp_path, monkeypatch, client):
+    test_client, _settings = client
+    yaml_path = tmp_path / "schedule.yaml"
+    monkeypatch.setattr(
+        api_module, "load_schedule_config", lambda: config_module.load_schedule_config(yaml_path)
+    )
+    monkeypatch.setattr(
+        api_module,
+        "save_schedule_config",
+        lambda updates: config_module.save_schedule_config(updates, path=yaml_path),
+    )
+
+    response = test_client.put("/api/schedule", json={"enabled": True, "interval_seconds": 3600})
+
+    assert response.status_code == 200
+    assert response.json() == {"enabled": True, "interval_seconds": 3600}
+    reloaded = config_module.load_schedule_config(yaml_path)
+    assert reloaded == {"enabled": True, "interval_seconds": 3600}

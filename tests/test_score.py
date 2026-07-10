@@ -80,7 +80,17 @@ def _seeded_conn(settings):
     return conn
 
 
-def test_run_scoring_writes_alert_for_accelerating_pain_point(settings_factory):
+def test_run_scoring_writes_alert_for_accelerating_pain_point(tmp_path, monkeypatch, settings_factory):
+    # Isolated from config/escalation_criteria.yaml's real, dashboard-editable
+    # contents -- this test wants product_bug's DEFAULT_ESCALATION_CRITERIA
+    # requires_qa (False), not whatever a real dashboard edit last saved there.
+    from radar.config import load_escalation_criteria as real_load_escalation_criteria
+
+    yaml_path = tmp_path / "escalation_criteria.yaml"
+    monkeypatch.setattr(
+        score_module, "load_escalation_criteria", lambda: real_load_escalation_criteria(yaml_path)
+    )
+
     settings = settings_factory(velocity_threshold=10.0)
     conn = _seeded_conn(settings)
     _insert_snapshot(conn, "t3_a", BASE, 10.0, poll_run_id="run-1")

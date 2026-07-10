@@ -1,0 +1,7 @@
+# Automatic collection: whether radar serve's background scheduler is on,
+# and how often it polls (seconds). Off by default -- same "opt-in, not
+# because it costs anything" convention as ENABLE_HACKERNEWS_SOURCE/
+# ENABLE_STACKOVERFLOW_SOURCE. Dashboard-editable (Settings tab) -- see
+# radar/config.py and radar/scheduler.py.
+enabled: true
+interval_seconds: 7200

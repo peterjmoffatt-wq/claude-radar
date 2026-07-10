@@ -465,6 +465,26 @@ button.run-collection:disabled {
   margin-bottom: 14px;
 }
 
+.schedule-enabled-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  color: var(--text-primary);
+  margin-bottom: 10px;
+}
+
+.schedule-enabled-row input[type="number"] {
+  width: 70px;
+  font: inherit;
+  font-size: 13px;
+  padding: 4px 6px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface-1);
+  color: var(--text-primary);
+}
+
 #save-watchlist-btn {
   color: var(--series-1);
   border-color: var(--series-1);

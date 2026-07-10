@@ -2679,6 +2679,53 @@
     }
   }
 
+  // -- automatic collection schedule (Settings tab, Sources sub-tab) ----------
+
+  async function loadScheduleCard() {
+    const checkbox = document.getElementById("schedule-enabled-checkbox");
+    const intervalInput = document.getElementById("schedule-interval-input");
+    const lastChecked = document.getElementById("schedule-last-checked");
+    try {
+      const schedule = await fetchJSON("/api/schedule");
+      checkbox.checked = schedule.enabled;
+      intervalInput.value = schedule.interval_seconds / 3600;
+      lastChecked.textContent = schedule.last_collected_at
+        ? `Last checked: ${formatDate(schedule.last_collected_at)}`
+        : "Last checked: never yet.";
+    } catch (err) {
+      lastChecked.textContent = "Failed to load the schedule.";
+    }
+  }
+
+  async function saveSchedule() {
+    const button = document.getElementById("save-schedule-btn");
+    const status = document.getElementById("schedule-status");
+    const checkbox = document.getElementById("schedule-enabled-checkbox");
+    const intervalInput = document.getElementById("schedule-interval-input");
+
+    const hours = Number(intervalInput.value);
+    if (!hours || hours <= 0) {
+      status.textContent = "Enter an interval greater than 0.";
+      return;
+    }
+
+    button.disabled = true;
+    status.textContent = "Saving…";
+    try {
+      const res = await fetch("/api/schedule", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ enabled: checkbox.checked, interval_seconds: Math.round(hours * 3600) }),
+      });
+      if (!res.ok) throw new Error("schedule save failed");
+      status.textContent = "Saved -- takes effect within a few seconds, no restart needed.";
+    } catch (err) {
+      status.textContent = "Failed to save the schedule.";
+    } finally {
+      button.disabled = false;
+    }
+  }
+
   // -- watchlist editor (Settings tab: terms / clients / risk patterns) -------
 
   // Reusable editable tag-list: `items` is mutated in place (splice/push) so
@@ -3120,6 +3167,8 @@
   document.getElementById("save-escalation-criteria-btn").addEventListener("click", saveEscalationCriteria);
   document.getElementById("save-model-tiers-btn").addEventListener("click", saveModelTiers);
   document.getElementById("run-collection-btn").addEventListener("click", runCollection);
+  document.getElementById("save-schedule-btn").addEventListener("click", saveSchedule);
+  loadScheduleCard();
 
   document.getElementById("filter-status").addEventListener("change", loadAlerts);
   document.getElementById("filter-category").addEventListener("change", loadAlerts);
