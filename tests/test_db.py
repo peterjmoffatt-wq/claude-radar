@@ -497,13 +497,39 @@ def test_get_alerts_reports_action_count(tmp_path):
     _seed_two_snapshots(conn, "t3_count")
     conn.commit()
 
-    before = get_alerts(conn, post_id="t3_count")[0][-1]
+    before = get_alerts(conn, post_id="t3_count")[0][-2]
     log_alert_action(conn, "t3_count", "File engineering ticket")
-    after = get_alerts(conn, post_id="t3_count")[0][-1]
+    after = get_alerts(conn, post_id="t3_count")[0][-2]
     conn.close()
 
     assert before == 0
     assert after == 1
+
+
+def test_get_alerts_reports_resolved_at(tmp_path):
+    conn = get_connection(tmp_path / "radar.db")
+    init_db(conn)
+    write_alert(conn, "t3_resolved", 10.0, 5.0, "product_bug", "high", "not_required")
+    conn.execute(
+        """
+        INSERT INTO classifications (
+            post_id, is_pain_point, category, model_implicated, severity,
+            issue_summary, classifier_model, classified_at
+        ) VALUES ('t3_resolved', 1, 'product_bug', 'claude_api_general', 'high', 'a summary',
+                  'test-model', ?)
+        """,
+        (datetime.now(timezone.utc).isoformat(),),
+    )
+    _seed_two_snapshots(conn, "t3_resolved")
+    conn.commit()
+
+    before = get_alerts(conn, post_id="t3_resolved")[0][-1]
+    transition_incident(conn, "t3_resolved", "resolved")
+    after = get_alerts(conn, post_id="t3_resolved")[0][-1]
+    conn.close()
+
+    assert before is None
+    assert after is not None
 
 
 def test_new_alert_defaults_to_open_incident_status(tmp_path):

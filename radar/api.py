@@ -93,6 +93,7 @@ def _alert_dict(row: tuple) -> dict:
         "coa",
         "coa_generated_at",
         "action_count",
+        "resolved_at",
     )
     return dict(zip(keys, row))
 
@@ -139,7 +140,7 @@ def api_alerts(
     dicts = [_alert_dict(row) for row in rows]
     for d in dicts:
         d["client"] = client_for_matched_term(d.get("matched_term"), search_config)
-        d["action_label"] = criteria.get(d["category"], {}).get("action_label", "Log action taken")
+        d["action_items"] = criteria.get(d["category"], {}).get("action_items", [])
     return dicts
 
 
@@ -378,25 +379,31 @@ def api_alert_transition(post_id: str, body: IncidentTransition) -> dict:
 
 
 class AlertActionRequest(BaseModel):
+    action_item: str
     note: str | None = None
 
 
 @app.post("/api/alerts/{post_id}/actions")
 def api_alert_log_action(post_id: str, body: AlertActionRequest) -> dict:
-    """Records that a human carried out the category's recommended action for
-    this alert -- gates api_alert_transition()'s move to 'resolved'. The
-    label is looked up server-side from the alert's category (not accepted
-    from the request) so the log can't drift from what the board displays.
+    """Records that a human carried out one of the category's recommended
+    action items for this alert -- gates api_alert_transition()'s move to
+    'resolved'. `action_item` must be one of that category's action_items
+    (not accepted freeform) so the log can't drift from what the board
+    displays.
     """
     conn = _connect()
     try:
         alert = _get_one_alert(conn, post_id)
         criteria = load_escalation_criteria()
-        action_label = criteria.get(alert["category"], {}).get("action_label", "Log action taken")
-        log_alert_action(conn, post_id, action_label, note=body.note)
+        valid_items = criteria.get(alert["category"], {}).get("action_items", [])
+        if valid_items and body.action_item not in valid_items:
+            raise HTTPException(
+                status_code=400, detail="Not a recognized action item for this alert's category."
+            )
+        log_alert_action(conn, post_id, body.action_item, note=body.note)
     finally:
         conn.close()
-    return {"post_id": post_id, "action_label": action_label, "note": body.note}
+    return {"post_id": post_id, "action_label": body.action_item, "note": body.note}
 
 
 @app.get("/api/alerts/{post_id}/actions")
@@ -438,7 +445,7 @@ def _get_one_alert(conn, post_id: str) -> dict:
     alert = _alert_dict(rows[0])
     alert["client"] = client_for_matched_term(alert.get("matched_term"), load_search_terms())
     criteria = load_escalation_criteria()
-    alert["action_label"] = criteria.get(alert["category"], {}).get("action_label", "Log action taken")
+    alert["action_items"] = criteria.get(alert["category"], {}).get("action_items", [])
     return alert
 
 

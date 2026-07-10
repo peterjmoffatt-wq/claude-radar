@@ -1096,6 +1096,32 @@ button.detail-jump-link:hover {
   color: var(--text-secondary);
 }
 
+.action-checklist {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 8px 0;
+}
+
+.action-checklist-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--text-primary);
+  padding: 6px 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface-1);
+}
+
+.action-checklist-row button {
+  font-size: 11px;
+  padding: 3px 8px;
+  flex-shrink: 0;
+}
+
 .incident-report-output {
   white-space: pre-wrap;
   font-family: inherit;
@@ -1171,24 +1197,26 @@ button.detail-jump-link:hover {
   resize: vertical;
 }
 
-.escalation-criteria-action-label {
-  display: flex;
-  align-items: center;
-  gap: 6px;
+.escalation-criteria-action-items-label {
+  display: block;
   font-size: 12px;
   color: var(--text-secondary);
   margin-top: 6px;
 }
 
-.escalation-criteria-action-label input {
-  flex: 1;
+.escalation-criteria-action-items {
+  display: block;
+  width: 100%;
+  box-sizing: border-box;
   font: inherit;
   font-size: 12px;
-  padding: 4px 6px;
+  padding: 6px 8px;
+  margin-top: 4px;
   border: 1px solid var(--border);
   border-radius: 6px;
   background: var(--surface-1);
   color: var(--text-primary);
+  resize: vertical;
 }
 
 tbody tr {
@@ -1259,7 +1287,6 @@ tbody tr {
   grid-template-columns: repeat(5, minmax(220px, 1fr));
   gap: 12px;
   overflow-x: auto;
-  align-items: start;
 }
 
 .board-column {
@@ -1268,6 +1295,12 @@ tbody tr {
   border-radius: 8px;
   padding: 10px;
   min-height: 120px;
+  /* Stretches to match the tallest column in the row (grid's default, but
+     explicit here) so the whole column -- not just the height of its own
+     cards -- is a valid drop target. A short column next to a tall one
+     otherwise leaves dead space below it that visually reads as part of the
+     column but isn't actually inside the element the drag listeners are on. */
+  align-self: stretch;
   transition: background-color 0.15s ease;
 }
 

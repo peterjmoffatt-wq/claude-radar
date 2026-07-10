@@ -1843,17 +1843,19 @@
         throw new Error((body && body.detail) || "transition request failed");
       }
       await loadAlerts();
+      return true;
     } catch (err) {
       window.alert(err.message || "Failed to update incident status.");
+      return false;
     }
   }
 
-  async function logAlertAction(postId, note) {
+  async function logAlertAction(postId, actionItem, note) {
     try {
       const res = await fetch(`/api/alerts/${encodeURIComponent(postId)}/actions`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ note: note || null }),
+        body: JSON.stringify({ action_item: actionItem, note: note || null }),
       });
       if (!res.ok) throw new Error("action request failed");
       await loadAlerts();
@@ -1864,29 +1866,28 @@
     }
   }
 
-  async function loadAlertActions(postId, listEl) {
+  async function fetchAlertActions(postId) {
     try {
-      const actions = await fetchJSON(`/api/alerts/${encodeURIComponent(postId)}/actions`);
-      listEl.textContent = "";
-      if (!actions.length) {
-        const li = document.createElement("li");
-        li.className = "empty-state";
-        li.textContent = "No actions logged yet.";
-        listEl.appendChild(li);
-        return;
-      }
-      actions.forEach((a) => {
-        const li = document.createElement("li");
-        li.textContent = `${formatDate(a.created_at)} — ${a.action_label}${a.note ? ": " + a.note : ""}`;
-        listEl.appendChild(li);
-      });
+      return await fetchJSON(`/api/alerts/${encodeURIComponent(postId)}/actions`);
     } catch (err) {
-      listEl.textContent = "";
+      return null;
+    }
+  }
+
+  function renderAlertActionHistory(actions, listEl) {
+    listEl.textContent = "";
+    if (!actions || !actions.length) {
       const li = document.createElement("li");
       li.className = "empty-state";
-      li.textContent = "Failed to load actions.";
+      li.textContent = actions === null ? "Failed to load actions." : "No actions logged yet.";
       listEl.appendChild(li);
+      return;
     }
+    actions.forEach((a) => {
+      const li = document.createElement("li");
+      li.textContent = `${formatDate(a.created_at)} — ${a.action_label}${a.note ? ": " + a.note : ""}`;
+      listEl.appendChild(li);
+    });
   }
 
   async function loadIncidentTimeline(postId, listEl) {
@@ -1981,29 +1982,51 @@
     actionNoteInput.value = alert.coa || "";
     actionsSection.appendChild(actionNoteInput);
 
-    const logActionRow = document.createElement("div");
-    logActionRow.className = "actions";
-    const logActionBtn = document.createElement("button");
-    logActionBtn.type = "button";
-    logActionBtn.textContent = alert.action_label || "Log action taken";
-    logActionRow.appendChild(logActionBtn);
-    actionsSection.appendChild(logActionRow);
+    const checklist = document.createElement("div");
+    checklist.className = "action-checklist";
+    actionsSection.appendChild(checklist);
 
     const actionsList = document.createElement("ul");
     actionsList.className = "incident-timeline";
     actionsSection.appendChild(actionsList);
     wrapper.appendChild(actionsSection);
-    loadAlertActions(alert.post_id, actionsList);
 
-    logActionBtn.addEventListener("click", async () => {
-      logActionBtn.disabled = true;
-      const ok = await logAlertAction(alert.post_id, actionNoteInput.value.trim());
-      if (ok) {
-        alert.action_count = (alert.action_count || 0) + 1;
-        loadAlertActions(alert.post_id, actionsList);
-      }
-      logActionBtn.disabled = false;
-    });
+    async function refreshActions() {
+      const actions = await fetchAlertActions(alert.post_id);
+      renderAlertActionHistory(actions, actionsList);
+      const loggedItems = new Set((actions || []).map((a) => a.action_label));
+
+      checklist.textContent = "";
+      (alert.action_items || []).forEach((item) => {
+        const row = document.createElement("div");
+        row.className = "action-checklist-row";
+        const label = document.createElement("span");
+        label.textContent = item;
+        row.appendChild(label);
+        if (loggedItems.has(item)) {
+          const tag = document.createElement("span");
+          tag.className = "action-logged-tag";
+          tag.textContent = "Logged";
+          row.appendChild(tag);
+        } else {
+          const btn = document.createElement("button");
+          btn.type = "button";
+          btn.textContent = "Log";
+          btn.addEventListener("click", async () => {
+            btn.disabled = true;
+            const ok = await logAlertAction(alert.post_id, item, actionNoteInput.value.trim());
+            if (ok) {
+              alert.action_count = (alert.action_count || 0) + 1;
+              await refreshActions();
+            }
+            btn.disabled = false;
+          });
+          row.appendChild(btn);
+        }
+        checklist.appendChild(row);
+      });
+    }
+    refreshActions();
 
     // -- exec brief --
     const briefSection = document.createElement("div");
@@ -2192,13 +2215,14 @@
 
     const actionsRow = document.createElement("div");
     actionsRow.className = "board-card-actions";
+    const primaryItem = (alert.action_items && alert.action_items[0]) || "Log action taken";
     const logActionBtn = document.createElement("button");
     logActionBtn.type = "button";
-    logActionBtn.textContent = alert.action_label || "Log action taken";
+    logActionBtn.textContent = primaryItem;
     logActionBtn.addEventListener("click", async (evt) => {
       evt.stopPropagation();
       logActionBtn.disabled = true;
-      await logAlertAction(alert.post_id, alert.coa || "");
+      await logAlertAction(alert.post_id, primaryItem, alert.coa || "");
       logActionBtn.disabled = false;
     });
     actionsRow.appendChild(logActionBtn);
@@ -2244,7 +2268,31 @@
       const coaBox = card.querySelector(".board-card-coa");
       if (coaBox) coaBox.textContent = "Generating recommended action…";
     }
-    await transitionIncident(postId, newStatus);
+    // Open immediately on the pre-transition data rather than waiting for the
+    // transition (which includes a real Claude call to generate the COA, a
+    // few real seconds) -- avoids a popup that feels laggy. Re-opens itself
+    // once the fresh data lands, unless the user already closed it.
+    const preTransitionAlert = alertsAllRows.find((a) => a.post_id === postId);
+    if (preTransitionAlert) openAlertCardModal(preTransitionAlert);
+
+    const success = await transitionIncident(postId, newStatus);
+
+    const modal = document.getElementById("alert-card-modal");
+    if (success && !modal.hidden) {
+      const alert = alertsAllRows.find((a) => a.post_id === postId);
+      if (alert) openAlertCardModal(alert);
+    }
+  }
+
+  // A resolved card falls off the board 24h after its most recent move into
+  // Resolved -- keeps the board focused on what's still active. Nothing is
+  // deleted: the Table view (and the status filter) still shows every alert
+  // regardless of age, so this is purely a Board-view declutter.
+  const RESOLVED_ARCHIVE_MS = 24 * 60 * 60 * 1000;
+
+  function isArchivedResolved(alert) {
+    if (!alert.resolved_at) return false;
+    return Date.now() - new Date(alert.resolved_at).getTime() > RESOLVED_ARCHIVE_MS;
   }
 
   function renderAlertsBoard(container, alerts) {
@@ -2256,12 +2304,16 @@
       column.className = "board-column" + (status === "false_positive" ? " board-column--muted" : "");
       column.dataset.status = status;
 
-      const columnAlerts = alerts.filter((a) => (a.incident_status || "open") === status);
+      const allColumnAlerts = alerts.filter((a) => (a.incident_status || "open") === status);
+      const columnAlerts =
+        status === "resolved" ? allColumnAlerts.filter((a) => !isArchivedResolved(a)) : allColumnAlerts;
+      const archivedCount = allColumnAlerts.length - columnAlerts.length;
 
       const header = document.createElement("div");
       header.className = "board-column-header";
       const meta = INCIDENT_META[status] || { label: status };
       header.textContent = `${meta.label} (${columnAlerts.length})`;
+      if (archivedCount > 0) header.textContent += ` · ${archivedCount} archived`;
       column.appendChild(header);
 
       const cardsContainer = document.createElement("div");
@@ -2710,7 +2762,7 @@
         requires_qa: false,
         velocity_threshold: null,
         response_template: "",
-        action_label: "",
+        action_items: [],
       };
 
       const row = document.createElement("div");
@@ -2769,21 +2821,25 @@
       });
       row.appendChild(templateInput);
 
-      const actionLabelLabel = document.createElement("label");
-      actionLabelLabel.className = "escalation-criteria-action-label";
-      actionLabelLabel.appendChild(document.createTextNode("Board action button text"));
-      const actionLabelInput = document.createElement("input");
-      actionLabelInput.type = "text";
-      actionLabelInput.placeholder = "Log action taken";
-      actionLabelInput.value = criteria.action_label || "";
-      actionLabelInput.addEventListener("input", () => {
+      const actionItemsLabel = document.createElement("label");
+      actionItemsLabel.className = "escalation-criteria-action-items-label";
+      actionItemsLabel.appendChild(document.createTextNode("Board action items (one per line)"));
+      const actionItemsInput = document.createElement("textarea");
+      actionItemsInput.className = "escalation-criteria-action-items";
+      actionItemsInput.rows = 3;
+      actionItemsInput.placeholder = "Log action taken";
+      actionItemsInput.value = (criteria.action_items || []).join("\n");
+      actionItemsInput.addEventListener("input", () => {
         escalationCriteria[category] = {
           ...escalationCriteria[category],
-          action_label: actionLabelInput.value,
+          action_items: actionItemsInput.value
+            .split("\n")
+            .map((s) => s.trim())
+            .filter(Boolean),
         };
       });
-      actionLabelLabel.appendChild(actionLabelInput);
-      row.appendChild(actionLabelLabel);
+      actionItemsLabel.appendChild(actionItemsInput);
+      row.appendChild(actionItemsLabel);
 
       container.appendChild(row);
     });

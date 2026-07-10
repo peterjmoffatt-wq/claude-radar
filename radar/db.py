@@ -446,7 +446,9 @@ def get_alerts(
                a.incident_status, a.exec_brief, a.exec_brief_generated_at,
                a.incident_report, a.incident_report_generated_at,
                a.coa, a.coa_generated_at,
-               (SELECT COUNT(*) FROM alert_actions aa WHERE aa.post_id = a.post_id) AS action_count
+               (SELECT COUNT(*) FROM alert_actions aa WHERE aa.post_id = a.post_id) AS action_count,
+               (SELECT MAX(created_at) FROM incident_events
+                WHERE alert_id = a.id AND to_status = 'resolved') AS resolved_at
         FROM alerts a
         JOIN classifications c ON c.post_id = a.post_id
         JOIN (
