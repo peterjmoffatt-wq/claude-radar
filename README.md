@@ -6,20 +6,25 @@ sensitive categories behind human review, clusters them by root cause, and surfa
 important clusters on a dashboard with a lead-time metric — how early we spotted an issue
 versus when it went viral. Built as a portfolio/interview prototype.
 
-**Status: Phase 9 of 9 (all phases scaffolded), plus a Mastodon source, a dashboard source
-picker/live-collection trigger, and an incident-response layer (lifecycle, exec briefs,
-post-incident reports, recurrence detection, dashboard-editable escalation criteria) added
-afterward.** Collectors for Reddit, YouTube, Hacker News, Stack Overflow, GitHub Issues, and
-Mastodon write a time series of post snapshots to SQLite; a Claude-based classifier labels
-pain points; a scorer turns accelerating pain points into alerts; a human QA gate reviews
-sensitive categories; a clustering step groups alerts by root cause and flags recurrence; a
-FastAPI + static dashboard surfaces all of it (including an interactive, draggable
-cross-platform footprint graph on the home tab, and a per-alert incident-lifecycle/exec-brief/
-post-incident-report panel); a lead-time metric measures how early the early-warning pass
-caught things; and a backtest CLI replays scored alerts against known past incidents. An
-X/Twitter source exists behind a feature flag but ships inert (no free API tier — see Phase 9
-below). See "How it works" for the full per-phase breakdown, and "Platforms not included" for
-what a partner-API-funded version would add next.
+**Status: Phase 9 of 9 (all phases scaffolded), plus a Mastodon source and a full
+incident-response layer added afterward: lifecycle tracking, Claude-drafted executive briefs
+and post-incident reports, recurrence detection, dashboard-editable escalation criteria and
+per-model protection tiers, a client × risk-pattern targeted-attack watchlist, and a
+Kanban-style Board where claiming an alert and dragging it through its lifecycle
+auto-generates a Claude-written Course of Action with an actionable, per-category checklist.**
+Collectors for Reddit, YouTube, Hacker News, Stack Overflow, GitHub Issues, and Mastodon write
+a time series of post snapshots to SQLite; a Claude-based classifier labels pain points; a
+scorer turns accelerating pain points into alerts; a human QA gate reviews sensitive
+categories; a clustering step groups alerts by root cause and flags recurrence; a FastAPI +
+static dashboard surfaces all of it (an interactive, draggable cross-platform footprint graph
+on the home tab with a one-click "send to Alerts" override for anything worth tracking that
+never crossed the automatic threshold; a team-wide Alerts queue with a claim workflow; a
+per-PM Board with the Course-of-Action/checklist loop described below; and a per-alert
+incident-lifecycle/exec-brief/post-incident-report panel); a lead-time metric measures how
+early the early-warning pass caught things; and a backtest CLI replays scored alerts against
+known past incidents. An X/Twitter source exists behind a feature flag but ships inert (no
+free API tier — see Phase 9 below). See "How it works" for the full per-phase breakdown, and
+"Platforms not included" for what a partner-API-funded version would add next.
 
 ## Guardrails
 
@@ -217,7 +222,7 @@ accelerating past its own last alert**, not just still above threshold, so a ste
 
 Independent of `qa_status`, every alert also carries its own `incident_status`
 (`open` → `acknowledged` → `mitigating` → `resolved`, or `false_positive`) — see
-"Incident lifecycle, exec briefs, and post-incident reports" below.
+"Incident lifecycle, claim workflow, exec briefs, and post-incident reports" below.
 
 ## Human QA review
 
@@ -233,22 +238,32 @@ rejects them — via this CLI or the dashboard's own approve/reject buttons (sam
 `radar/qa.py` backs both). Rejecting an alert also auto-closes its `incident_status` as
 `false_positive` (see below) — a rejected alert isn't a real incident to keep working.
 
-## Incident lifecycle, exec briefs, and post-incident reports
+## Incident lifecycle, claim workflow, exec briefs, and post-incident reports
 
 Every alert also carries its own `incident_status` — `open` → `acknowledged` →
 `mitigating` → `resolved` (or `false_positive`) — independent of `qa_status`: QA gates
 whether the *classification* is legitimate, incident status tracks whether someone is
 *actually working* it. Each transition is logged to `incident_events` (from/to/note/
-timestamp), forming an audit trail. This, and everything below, is dashboard-only (no
-CLI subcommands) — expand any row in the Alerts tab via **Details** to work an incident:
-advance its status, generate a short **executive brief** (2-3 sentences, Claude-generated
-via the same `httpx`+forced-nothing pattern the classifier uses for structured
-classification, with a deterministic template fallback if `ANTHROPIC_API_KEY` is unset or
-the call fails), and — once you're done — generate a **post-incident report**: a
-Markdown document combining the hard facts, the full status timeline, a Claude-written
-"what happened" narrative, and your own closing note on what should change, downloadable
-as `.md` or copyable to the clipboard. The footprint graph's hub detail panel can
-generate the same kind of brief for a whole root-cause cluster, not just one alert.
+Course-of-Action/timestamp), forming an audit trail. This, and everything below, is
+dashboard-only (no CLI subcommands).
+
+A third, also-independent axis: `claimed_by`/`claimed_at`. An alert can sit in the team-wide
+Alerts queue unclaimed indefinitely; claiming it (Alerts tab) is what makes it appear on the
+claiming PM's Board, where dragging it through its lifecycle does the real work — see "Board"
+above for the Kanban/Course-of-Action/checklist loop. Claim identity is intentionally a
+freeform name, not a real account: this project has no login system, so `claimed_by` is
+persisted client-side and trusted at face value, the same way `note` fields already are. A
+real login is the obvious next step for a multi-person deployment, not an oversight.
+
+Expand any row in the Alerts tab (or click a card on the Board) via **Details** to work an
+incident directly: advance its status, log one of its category's checklist actions, generate a
+short **executive brief** (2-3 sentences, Claude-generated via the same `httpx`+forced-nothing
+pattern the classifier uses for structured classification, with a deterministic template
+fallback if `ANTHROPIC_API_KEY` is unset or the call fails), and — once you're done — generate
+a **post-incident report**: a Markdown document combining the hard facts, the full status
+timeline, a Claude-written "what happened" narrative, and your own closing note on what should
+change, downloadable as `.md` or copyable to the clipboard. The footprint graph's hub detail
+panel can generate the same kind of brief for a whole root-cause cluster, not just one alert.
 
 ## Root-cause clusters
 
@@ -301,40 +316,77 @@ Serves a FastAPI backend + static frontend at <http://127.0.0.1:8000> (local onl
 HTML/CSS/vanilla JS — no build step, no CDN, works fully offline. See `radar/api.py` and
 `radar/static/`.
 
-Navigation is a left sidebar (Home / Watching / Alerts / Settings), not top tabs.
+Navigation is a left sidebar (Home / Watching / Alerts / Board / Settings), not top tabs.
 
 **Home** is the cross-platform footprint graph plus the root-cause cluster chart and lead-time
 stat. Nodes are pointer-draggable (drag to reposition, it stays pinned where you drop it) and
 clicking any node opens a persistent detail panel (platform name, category, severity/velocity,
 matched search term, summary, a real "View post" link) instead of relying on a hover tooltip —
 deliberately so, since the raw `post_id` alone doesn't tell you which platform, issue, or
-matched term you're looking at. **Filtering**: click a platform swatch in the legend to
-hide/show its nodes (and any hub left with zero visible members), or click a category chip
-above the graph to narrow to specific root causes — both read from the full fetched set, so
-toggling is instant and doesn't re-fetch.
+matched term you're looking at. A node that hasn't crossed the velocity threshold gets a **Send
+to Alerts** action in its detail panel — a human judgment call to track something the automated
+scoring didn't flag (`POST /api/watching/{post_id}/promote`, gated by the same QA rules a real
+alert would get). **Filtering**: click a platform swatch in the legend to hide/show its nodes
+(and any hub left with zero visible members), click a category chip above the graph to narrow
+to specific root causes, or use the client dropdown to isolate one watched enterprise client's
+posts — all three read from the full fetched set, so toggling is instant and doesn't re-fetch.
+A hub or satellite backed by a **flagship-tier** model (see "Escalation criteria and model
+protection" below) is flagged with a plain-text "Flagship"/"FLAGSHIP" label, not an icon.
 
-**Watching** and **Alerts** are the filterable, sortable tables — Platform/Category/Severity
-filters on both (Alerts also filters by QA status), a Platform filter added to Alerts, and
-click-to-sort column headers (Platform/Category/Severity/Velocity) with a ▲/▼ indicator; Alerts
-keeps its inline approve/reject actions, plus an **Incident** status column and a **Details**
-toggle per row that expands into the incident lifecycle/brief/report panel described above.
-Both tables show **Matched term** so a client-scoped hit (e.g. `"McDonald's jailbreak"`) is
-visibly distinct from a generic one.
+**Watching** is the filterable, sortable table of classified pain points that haven't (yet, or
+ever) become a real alert. **Alerts** is the team-wide queue — everything the system (or a
+manual "Send to Alerts") has flagged, whether anyone's working it yet or not. Both share
+Platform/Category/Severity filters (Alerts adds QA status) and click-to-sort columns
+(Platform/Category/Severity/Velocity) with a ▲/▼ indicator. Alerts keeps its inline
+approve/reject actions, an **Incident** status column, a **Claimed** column (a plain-text name
+pill, or "Unclaimed") with **Claim**/**Release** actions, and a **Details** toggle per row that
+expands into the incident lifecycle/brief/report panel described above. Both tables show
+**Matched term** so a client-scoped hit (e.g. `"McDonald's jailbreak"`) is visibly distinct
+from a generic one. Claim identity is a freeform "Claiming as" name persisted in the browser
+(no login system exists yet — see "Incident lifecycle" above for why that's a deliberate,
+not-yet-built line).
 
-**Settings** holds everything about *what* gets searched, separated from the "what did we
-find" tabs above: the source picker (checkboxes for every real platform, pre-checked from
-`GET /api/sources` if already configured in `.env`, plus disabled "Coming soon" entries for
-Discord/LinkedIn/TikTok/Threads — see "Platforms not included") with a **Run collection**
-button that `POST`s to `/api/collect` and triggers a real, live collection pass for just the
-checked sources; three editable watchlists (Search terms, Watched clients, Risk patterns —
-see "Tuning the watchlist" above) with a live "effective query preview" and a single **Save
-watchlist** button that writes to `config/search_terms.yaml` (so CLI runs pick it up too, not
-just dashboard clicks); and an **Escalation criteria** card — per category, whether it requires
-human QA, an optional velocity-threshold override, and a first-response playbook — that writes
-to `config/escalation_criteria.yaml`, so `radar score` (CLI or dashboard-triggered) picks up
-edits the same way. In production, collection runs on a schedule (e.g. a cron/systemd timer
-calling `radar collect`) rather than a manual click — this button is the same underlying
-operation, triggered on demand for the dashboard/demo case.
+**Board** is a claimed alert's real home: a five-column Kanban (Open / Acknowledged /
+Mitigating / Resolved / False positive) scoped to *only* what you've claimed from the Alerts
+tab — claiming is what moves a post here. Drag a card into Acknowledged, Mitigating, or
+Resolved and the dashboard auto-generates a Claude-written **Course of Action**, grounded in
+that category's `response_template` playbook and aware of severity/protection-tier/client
+context (`radar/brief.py`'s `generate_coa`) — paired with that category's concrete
+`action_items` checklist (`config/escalation_criteria.yaml`; e.g. credential theft: file a ToS
+report, lock the account, alert the platform). **Resolving requires at least one logged
+action** — enforced server-side, not just in the UI — so a card can't be waved through without
+anyone having actually done anything. Resolved cards fall off the Board 24h after resolution to
+keep it focused on active work (the header shows an honest "N archived" count); nothing is
+deleted, the Alerts table still shows everything regardless of age. Clicking a card opens the
+same incident detail panel as the table's Details toggle, in a modal.
+
+**Settings** holds everything about *what* gets searched and how it's triaged, separated from
+the "what did we find" tabs above, organized into its own four sub-tabs (a plain JS tab strip,
+no server round-trip to switch) so each section is reachable without scrolling past the others:
+
+- **Sources** — checkboxes for every real platform, pre-checked from `GET /api/sources` if
+  already configured in `.env`, plus disabled "Coming soon" entries for
+  Discord/LinkedIn/TikTok/Threads (see "Platforms not included"), with a **Run collection**
+  button that `POST`s to `/api/collect` and triggers a real, live collection pass for just the
+  checked sources. In production, collection runs on a schedule (e.g. a cron/systemd timer
+  calling `radar collect`) rather than a manual click — this button is the same underlying
+  operation, triggered on demand for the dashboard/demo case.
+- **Watchlist** — three editable lists (Search terms, Watched clients, Risk patterns — see
+  "Tuning the watchlist" above) with a live "effective query preview" and a single **Save
+  watchlist** button that writes to `config/search_terms.yaml` (so CLI runs pick it up too, not
+  just dashboard clicks).
+- **Escalation criteria and model protection** — per category: whether it requires human QA, an
+  optional velocity-threshold override, a first-response playbook, and its **Board action
+  items** (one per line — the checklist the Board's Course-of-Action panel offers; a category
+  can list several, e.g. credential theft's "File a ToS report" / "Lock the user's account" /
+  "File a report to the platform"), writing to `config/escalation_criteria.yaml`. **Model
+  protection**, on its own sub-tab: per model (`claude_opus`, `claude_sonnet`, `claude_haiku`,
+  `claude_fable`, `claude_api_general`, `claude_code`, `other_llm`, `not_applicable`,
+  `unknown`), a `flagship`/`standard` protection tier plus an optional velocity-threshold
+  override, writing to `config/model_tiers.yaml` — a flagship-model incident isn't the same
+  story as one on a small/cheap model, and this is what drives the "Flagship" labeling on the
+  Home tab. Both save independently and both feed `radar score` (CLI or dashboard-triggered)
+  the same way.
 
 `POST /api/collect` runs synchronously in-request, which is fine at this data volume but is a
 tradeoff a production version would background instead. **A live click against several search
@@ -404,6 +456,41 @@ network access required for any of it.
   → the Watching/Alerts tables and the footprint graph's detail panel/tooltip); footprint graph
   filtering by platform (click a legend swatch) and category (chip row above the graph);
   sortable Watching/Alerts columns.
+- **Escalation-ops round (schema v5):** dashboard-editable `escalation_criteria.yaml`
+  (`requires_qa`, velocity override, `response_template`) driving `radar score`'s QA gate and
+  threshold precedence; the incident lifecycle (`incident_status`, `incident_events`),
+  Claude-generated executive briefs and post-incident reports (`radar/brief.py`), and recurrence
+  detection (episodes, `RECURRENCE_GAP_HOURS`).
+- **Client filter, model protection, Kanban + Course-of-Action round (schema v6):** the
+  footprint graph's client dropdown filter (`footprintClientFilter` in
+  `radar/static/dashboard.js`); per-model protection tiers (`config/model_tiers.yaml`,
+  `radar/config.py`'s `protection_tier_for()`), threaded into scoring precedence (category →
+  model → platform → global) and surfaced as a plain-text "Flagship" label on the Home tab
+  (deliberately not an icon — see below); the Board's Kanban view over the existing
+  `incident_status` values (no second state machine); `generate_coa()` (`radar/brief.py`)
+  drafting a Claude-written, category/client/severity-aware Course of Action the moment a card
+  lands in Acknowledged/Mitigating/Resolved, stored on both the alert (current) and the
+  `incident_events` row (history). All icon-as-status-signal UI (a ⭐ on flagship-model hub
+  labels) was replaced with plain-text pills after direct feedback that it read as unpolished —
+  a rule applied to every screen built afterward too.
+- **Action-checklist round:** `alert_actions` (schema v7) logging a human confirming a specific
+  recommended action was actually carried out, gating `POST /api/alerts/{post_id}/transition`'s
+  move to `resolved` on at least one logged action (server-side, not just a UI nicety); reworked
+  from a single action label into a per-category `action_items` checklist (schema unchanged —
+  `alert_actions.action_label` already stored an arbitrary string, so "one of several possible
+  items" needed no migration); the Board auto-opens the incident detail panel on a successful
+  drag instead of waiting on the full Claude round-trip, and a resolved card falls off the Board
+  24h after resolution (`resolved_at`, computed from `incident_events`) without being deleted.
+- **Team/PM split round:** `claimed_by`/`claimed_at` (schema v8) splitting the single Alerts
+  view into a team-wide queue (Alerts) and a per-PM Kanban (Board, filtered to claimed rows
+  client-side); `POST /api/watching/{post_id}/promote` letting a human manually send a
+  Watching-tier post to Alerts from the footprint graph, reusing `write_alert()` — the same
+  function `run_scoring()` calls — so a manual promotion is indistinguishable in shape from an
+  automatic one; Settings reorganized into its own Sources/Watchlist/Escalation
+  criteria/Model protection sub-tabs once the page grew too long to scan in one scroll.
+- **`docs/index.html`:** a standalone, self-contained overview/pitch page (real screenshots of
+  the running dashboard, embedded fonts, no build step) for sharing this project outside the
+  running app itself — served via GitHub Pages independent of anything in `radar/`.
 
 ## Data model
 
@@ -417,11 +504,19 @@ network access required for any of it.
 - `alerts` — one row per *alert event* (a post can re-alert if it accelerates again):
   `post_id`, `triggered_at`, `virality_score`, `velocity`, `category`, `severity`,
   `qa_status` (`pending` / `approved` / `rejected` / `not_required`), `incident_status`
-  (`open` / `acknowledged` / `mitigating` / `resolved` / `false_positive`), and a cached
-  `exec_brief`/`incident_report` once generated.
-- `incident_events` — append-only timeline of `incident_status` transitions
-  (`alert_id`, `from_status`, `to_status`, `note`, `created_at`) — the audit trail behind
-  the Alerts tab's Details panel and the post-incident report.
+  (`open` / `acknowledged` / `mitigating` / `resolved` / `false_positive`), a cached
+  `exec_brief`/`incident_report` once generated, the current `coa` (Course of Action) once
+  generated, and `claimed_by`/`claimed_at` (freeform name + timestamp, nullable — unset means
+  the alert is still unclaimed in the team-wide queue).
+- `incident_events` — append-only timeline of `incident_status` transitions (`alert_id`,
+  `from_status`, `to_status`, `note`, `coa`, `created_at`) — the audit trail behind the Alerts
+  tab's Details panel and the post-incident report. `coa` here is the Course of Action
+  generated for *that specific transition*, distinct from `alerts.coa` (the current one) and
+  from `note` (a human-entered reason).
+- `alert_actions` — one row per confirmed action (`post_id`, `action_label`, `note`,
+  `created_at`) — a human confirming a specific recommended action was actually carried out,
+  not just recommended. At least one row must exist before `incident_status` can move to
+  `resolved`.
 - `cluster_briefs` — one cached exec brief per root-cause cluster (`cluster_key`), since
   clusters themselves aren't otherwise persisted (`get_clusters()` computes them fresh).
 
