@@ -1054,3 +1054,91 @@ def test_api_alert_transition_to_resolved_succeeds_after_action_logged(client, l
 
     alerts = test_client.get("/api/alerts").json()
     assert alerts[0]["resolved_at"] is not None
+
+
+def test_api_promote_creates_an_alert_from_a_watching_post(client):
+    test_client, settings = client
+    conn = get_connection(settings.database_path)
+    init_db(conn)
+    _seed_classification_only(conn, "t3_promote", is_pain_point=True, category="ux_confusion")
+    conn.close()
+
+    response = test_client.post("/api/watching/t3_promote/promote")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["post_id"] == "t3_promote"
+    assert body["incident_status"] == "open"
+    # Only one snapshot was seeded -- not enough history to compute a real
+    # velocity, so the manual-promotion fallback (0.0) applies.
+    assert body["velocity"] == 0.0
+    assert body["qa_status"] == "not_required"
+
+    watching = test_client.get("/api/watching").json()
+    assert watching == []
+    alerts = test_client.get("/api/alerts").json()
+    assert [a["post_id"] for a in alerts] == ["t3_promote"]
+
+
+def test_api_promote_still_requires_qa_for_sensitive_categories(client):
+    test_client, settings = client
+    conn = get_connection(settings.database_path)
+    init_db(conn)
+    _seed_classification_only(conn, "t3_promote_sensitive", is_pain_point=True, category="credential_theft")
+    conn.close()
+
+    response = test_client.post("/api/watching/t3_promote_sensitive/promote")
+
+    assert response.status_code == 200
+    assert response.json()["qa_status"] == "pending"
+
+
+def test_api_promote_returns_404_when_not_a_watching_post(client):
+    test_client, _ = client
+
+    response = test_client.post("/api/watching/t3_nonexistent/promote")
+
+    assert response.status_code == 404
+
+
+def test_api_promote_returns_400_when_already_an_alert(client):
+    test_client, settings = client
+    conn = get_connection(settings.database_path)
+    init_db(conn)
+    _seed_alert(conn, "t3_already", category="product_bug")
+    conn.close()
+
+    response = test_client.post("/api/watching/t3_already/promote")
+
+    assert response.status_code == 400
+
+
+def test_api_alert_claim_and_release(client):
+    test_client, settings = client
+    conn = get_connection(settings.database_path)
+    init_db(conn)
+    _seed_alert(conn, "t3_claim", category="product_bug")
+    conn.close()
+
+    claim_response = test_client.post("/api/alerts/t3_claim/claim", json={"claimed_by": "Alex"})
+    assert claim_response.status_code == 200
+    assert claim_response.json() == {"post_id": "t3_claim", "claimed_by": "Alex"}
+
+    alerts = test_client.get("/api/alerts").json()
+    assert alerts[0]["claimed_by"] == "Alex"
+    assert alerts[0]["claimed_at"]
+
+    release_response = test_client.post("/api/alerts/t3_claim/release")
+    assert release_response.status_code == 200
+
+    alerts = test_client.get("/api/alerts").json()
+    assert alerts[0]["claimed_by"] is None
+    assert alerts[0]["claimed_at"] is None
+
+
+def test_api_alert_claim_returns_404_for_unknown_post(client):
+    test_client, _ = client
+
+    response = test_client.post("/api/alerts/t3_missing/claim", json={"claimed_by": "Alex"})
+
+    assert response.status_code == 404

@@ -9,7 +9,7 @@ from radar.hashing import hash_author
 from radar.models import Classification, RawPost
 from radar.virality import virality_score
 
-SCHEMA_VERSION = "7"
+SCHEMA_VERSION = "8"
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS snapshots (
@@ -69,7 +69,13 @@ CREATE TABLE IF NOT EXISTS alerts (
     -- Current recommended Course of Action -- same fast-read/overwrite-on-
     -- regenerate shape as exec_brief. See radar/brief.py's generate_coa().
     coa                           TEXT,
-    coa_generated_at              TEXT
+    coa_generated_at              TEXT,
+    -- Which PM has this alert on their personal Board (freeform name, no
+    -- auth system exists) -- distinct from incident_status/qa_status: an
+    -- alert can sit unclaimed in the team-wide Alerts tab indefinitely.
+    -- See claim_alert()/release_alert() below.
+    claimed_by                    TEXT,
+    claimed_at                    TEXT
 );
 
 CREATE INDEX IF NOT EXISTS idx_alerts_post_id ON alerts(post_id);
@@ -173,6 +179,10 @@ def _migrate(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE alerts ADD COLUMN coa TEXT")
     if "coa_generated_at" not in alerts_columns:
         conn.execute("ALTER TABLE alerts ADD COLUMN coa_generated_at TEXT")
+    if "claimed_by" not in alerts_columns:
+        conn.execute("ALTER TABLE alerts ADD COLUMN claimed_by TEXT")
+    if "claimed_at" not in alerts_columns:
+        conn.execute("ALTER TABLE alerts ADD COLUMN claimed_at TEXT")
 
     incident_events_columns = {
         row[1] for row in conn.execute("PRAGMA table_info(incident_events)").fetchall()
@@ -448,7 +458,8 @@ def get_alerts(
                a.coa, a.coa_generated_at,
                (SELECT COUNT(*) FROM alert_actions aa WHERE aa.post_id = a.post_id) AS action_count,
                (SELECT MAX(created_at) FROM incident_events
-                WHERE alert_id = a.id AND to_status = 'resolved') AS resolved_at
+                WHERE alert_id = a.id AND to_status = 'resolved') AS resolved_at,
+               a.claimed_by, a.claimed_at
         FROM alerts a
         JOIN classifications c ON c.post_id = a.post_id
         JOIN (
@@ -484,14 +495,15 @@ def get_alerts(
     return conn.execute(query, params).fetchall()
 
 
-def get_unscored_pain_points(conn: sqlite3.Connection) -> list[tuple]:
+def get_unscored_pain_points(conn: sqlite3.Connection, post_id: str | None = None) -> list[tuple]:
     """Pain-point classifications with no alert ever fired for them -- either they
     haven't had a second snapshot yet to compute velocity from, or their velocity
     never crossed VELOCITY_THRESHOLD. Gives the dashboard visibility into real
-    signal that exists but isn't (yet, or ever) surfaced as an alert.
+    signal that exists but isn't (yet, or ever) surfaced as an alert. `post_id`
+    narrows to a single row -- used by the manual "send to Alerts" promotion path,
+    which needs one targeted lookup rather than the full watching list.
     """
-    return conn.execute(
-        """
+    query = """
         SELECT c.post_id, c.category, c.severity, c.issue_summary, c.model_implicated,
                ls.url, ls.platform, ls.matched_term,
                ls.hashed_author, ls.likes, ls.comments, ls.score, ls.shares, ls.created_at
@@ -508,9 +520,14 @@ def get_unscored_pain_points(conn: sqlite3.Connection) -> list[tuple]:
         ) ls ON ls.post_id = c.post_id
         WHERE c.is_pain_point = 1
         AND NOT EXISTS (SELECT 1 FROM alerts a WHERE a.post_id = c.post_id)
-        ORDER BY c.classified_at DESC
-        """
-    ).fetchall()
+    """
+    params: list[str] = []
+    if post_id:
+        query += " AND c.post_id = ?"
+        params.append(post_id)
+    query += " ORDER BY c.classified_at DESC"
+
+    return conn.execute(query, params).fetchall()
 
 
 def resolve_alert(conn: sqlite3.Connection, post_id: str, decision: str) -> bool:
@@ -526,6 +543,37 @@ def resolve_alert(conn: sqlite3.Connection, post_id: str, decision: str) -> bool
     if row is None:
         return False
     conn.execute("UPDATE alerts SET qa_status = ? WHERE id = ?", (decision, row[0]))
+    conn.commit()
+    return True
+
+
+def claim_alert(conn: sqlite3.Connection, post_id: str, claimed_by: str) -> bool:
+    """Assigns the post's latest alert to a PM's personal Board -- claimed_by is
+    freeform (no auth system exists yet). Returns whether a row was actually
+    updated (False if no alert exists for post_id).
+    """
+    alert_id = _latest_alert_id(conn, post_id)
+    if alert_id is None:
+        return False
+    conn.execute(
+        "UPDATE alerts SET claimed_by = ?, claimed_at = ? WHERE id = ?",
+        (claimed_by, datetime.now(timezone.utc).isoformat(), alert_id),
+    )
+    conn.commit()
+    return True
+
+
+def release_alert(conn: sqlite3.Connection, post_id: str) -> bool:
+    """Clears a claim, handing the post back to the team-wide Alerts pool.
+
+    Returns whether a row was actually updated (False if no alert exists for post_id).
+    """
+    alert_id = _latest_alert_id(conn, post_id)
+    if alert_id is None:
+        return False
+    conn.execute(
+        "UPDATE alerts SET claimed_by = NULL, claimed_at = NULL WHERE id = ?", (alert_id,)
+    )
     conn.commit()
     return True
 

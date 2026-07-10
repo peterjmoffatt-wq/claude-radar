@@ -876,7 +876,8 @@ button.run-collection:disabled {
   gap: 4px;
 }
 
-.filters select {
+.filters select,
+.filters input[type="text"] {
   font: inherit;
   font-size: 13px;
   padding: 6px 8px;
@@ -884,6 +885,23 @@ button.run-collection:disabled {
   border: 1px solid var(--border);
   background: var(--surface-1);
   color: var(--text-primary);
+}
+
+.filters input[type="text"] {
+  width: 140px;
+}
+
+/* A plain text pill, not an icon -- matches .action-logged-tag's convention
+   but a neutral/muted tone since "unclaimed" isn't a positive-state signal. */
+.unclaimed-tag {
+  display: inline-block;
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--text-muted);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 1px 6px;
+  white-space: nowrap;
 }
 
 /* -- alerts table -- */

@@ -1007,6 +1007,37 @@
           actions.appendChild(jumpBtn);
         }
 
+        if (!n.isAlert && n.member.post_id) {
+          const promoteBtn = document.createElement("button");
+          promoteBtn.type = "button";
+          promoteBtn.textContent = "Send to Alerts";
+          promoteBtn.addEventListener("click", async () => {
+            promoteBtn.disabled = true;
+            promoteBtn.textContent = "Sending…";
+            try {
+              const res = await fetch(
+                `/api/watching/${encodeURIComponent(n.member.post_id)}/promote`,
+                { method: "POST" }
+              );
+              if (!res.ok) throw new Error("promote request failed");
+              const alert = await res.json();
+              // Instant feedback in the still-open panel -- the node's own
+              // circle (hollow -> solid) catches up once the background
+              // reload below rebuilds the graph with fresh data.
+              n.isAlert = true;
+              n.member = { ...n.member, ...alert };
+              renderDetail(n);
+              loadFootprintGraph();
+              loadAlerts();
+            } catch (err) {
+              window.alert("Failed to send this post to Alerts.");
+              promoteBtn.disabled = false;
+              promoteBtn.textContent = "Send to Alerts";
+            }
+          });
+          actions.appendChild(promoteBtn);
+        }
+
         detailPanel.appendChild(actions);
       }
 
@@ -1641,7 +1672,10 @@
     let rows = platform ? alertsAllRows.filter((a) => a.platform === platform) : alertsAllRows;
     rows = applySort(rows, alertsSort, ALERTS_SORT_ACCESSORS);
     renderAlerts(tbody, rows);
-    renderAlertsBoard(document.getElementById("alerts-board"), rows);
+    // The Board tab is a PM's personal workspace, scoped to what they've
+    // claimed -- unlike the Alerts table above, unfiltered by platform/sort
+    // since it's a small, already-focused set grouped by column instead.
+    renderAlertsBoard(document.getElementById("alerts-board"), alertsAllRows.filter((a) => a.claimed_by));
   }
 
   async function loadAlerts() {
@@ -1661,7 +1695,7 @@
       tbody.textContent = "";
       const tr = document.createElement("tr");
       const td = document.createElement("td");
-      td.colSpan = 13;
+      td.colSpan = 14;
       td.className = "empty-state";
       td.textContent = "Failed to load alerts.";
       tr.appendChild(td);
@@ -1682,7 +1716,7 @@
     if (!alerts.length) {
       const tr = document.createElement("tr");
       const td = document.createElement("td");
-      td.colSpan = 13;
+      td.colSpan = 14;
       td.className = "empty-state";
       td.textContent = "No alerts match these filters.";
       tr.appendChild(td);
@@ -1717,6 +1751,19 @@
       incidentTd.appendChild(
         badge(INCIDENT_META[a.incident_status] || { dot: "muted", label: a.incident_status })
       );
+
+      const claimedTd = document.createElement("td");
+      if (a.claimed_by) {
+        const claimedTag = document.createElement("span");
+        claimedTag.className = "action-logged-tag";
+        claimedTag.textContent = a.claimed_by;
+        claimedTd.appendChild(claimedTag);
+      } else {
+        const unclaimedTag = document.createElement("span");
+        unclaimedTag.className = "unclaimed-tag";
+        unclaimedTag.textContent = "Unclaimed";
+        claimedTd.appendChild(unclaimedTag);
+      }
 
       const summaryTd = document.createElement("td");
       summaryTd.className = "summary-cell";
@@ -1763,6 +1810,27 @@
         actions.appendChild(rejectBtn);
       }
 
+      const claimBtn = document.createElement("button");
+      claimBtn.type = "button";
+      if (a.claimed_by) {
+        claimBtn.textContent = "Release";
+        claimBtn.addEventListener("click", async () => {
+          claimBtn.disabled = true;
+          await releaseAlert(a.post_id);
+          claimBtn.disabled = false;
+        });
+      } else {
+        claimBtn.textContent = "Claim";
+        claimBtn.addEventListener("click", async () => {
+          const name = currentClaimingAs();
+          if (!name) return;
+          claimBtn.disabled = true;
+          await claimAlert(a.post_id, name);
+          claimBtn.disabled = false;
+        });
+      }
+      actions.appendChild(claimBtn);
+
       const detailsBtn = document.createElement("button");
       detailsBtn.type = "button";
       detailsBtn.setAttribute("aria-expanded", "false");
@@ -1778,6 +1846,7 @@
       tr.appendChild(velocityTd);
       tr.appendChild(qaTd);
       tr.appendChild(incidentTd);
+      tr.appendChild(claimedTd);
       tr.appendChild(summaryTd);
       tr.appendChild(posterTd);
       tr.appendChild(postedTd);
@@ -1803,6 +1872,56 @@
       await loadAlerts();
     } catch (err) {
       window.alert("Failed to update review status.");
+    }
+  }
+
+  // -- claim workflow (Alerts tab -> Board tab) --------------------------------
+  // No auth system exists yet (a real login is a future direction) -- claim
+  // identity is just a freeform name, persisted locally so it doesn't need
+  // retyping on every claim.
+
+  const CLAIMING_AS_KEY = "radar_claiming_as";
+
+  function initClaimingAsInput() {
+    const input = document.getElementById("claiming-as-input");
+    input.value = localStorage.getItem(CLAIMING_AS_KEY) || "";
+    input.addEventListener("input", () => localStorage.setItem(CLAIMING_AS_KEY, input.value));
+  }
+
+  function currentClaimingAs() {
+    const input = document.getElementById("claiming-as-input");
+    let name = input.value.trim();
+    if (!name) {
+      name = (window.prompt("Claiming as (your name):", "") || "").trim();
+      if (name) {
+        input.value = name;
+        localStorage.setItem(CLAIMING_AS_KEY, name);
+      }
+    }
+    return name;
+  }
+
+  async function claimAlert(postId, claimedBy) {
+    try {
+      const res = await fetch(`/api/alerts/${encodeURIComponent(postId)}/claim`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ claimed_by: claimedBy }),
+      });
+      if (!res.ok) throw new Error("claim request failed");
+      await loadAlerts();
+    } catch (err) {
+      window.alert("Failed to claim this alert.");
+    }
+  }
+
+  async function releaseAlert(postId) {
+    try {
+      const res = await fetch(`/api/alerts/${encodeURIComponent(postId)}/release`, { method: "POST" });
+      if (!res.ok) throw new Error("release request failed");
+      await loadAlerts();
+    } catch (err) {
+      window.alert("Failed to release this alert.");
     }
   }
 
@@ -2138,7 +2257,7 @@
     const detailTr = document.createElement("tr");
     detailTr.className = "alert-detail-row";
     const td = document.createElement("td");
-    td.colSpan = 13;
+    td.colSpan = 14;
     td.appendChild(buildIncidentDetailPanel(alert));
     detailTr.appendChild(td);
     tr.after(detailTr);
@@ -2344,19 +2463,7 @@
     });
   }
 
-  function initAlertsViewToggle() {
-    const buttons = document.querySelectorAll(".view-toggle-btn");
-    buttons.forEach((btn) => {
-      btn.addEventListener("click", () => {
-        buttons.forEach((b) => {
-          const active = b === btn;
-          b.classList.toggle("is-active", active);
-          b.setAttribute("aria-selected", String(active));
-        });
-        document.getElementById("alerts-table-view").hidden = btn.dataset.view !== "table";
-        document.getElementById("alerts-board-view").hidden = btn.dataset.view !== "board";
-      });
-    });
+  function initAlertCardModal() {
     document.getElementById("alert-card-modal-close").addEventListener("click", closeAlertCardModal);
     document.getElementById("alert-card-modal").addEventListener("click", (evt) => {
       if (evt.target.id === "alert-card-modal") closeAlertCardModal();
@@ -2983,7 +3090,8 @@
   initSettingsTab();
   initEscalationCriteriaTab();
   initModelTiersTab();
-  initAlertsViewToggle();
+  initAlertCardModal();
+  initClaimingAsInput();
   document.getElementById("save-watchlist-btn").addEventListener("click", saveWatchlist);
   document.getElementById("save-escalation-criteria-btn").addEventListener("click", saveEscalationCriteria);
   document.getElementById("save-model-tiers-btn").addEventListener("click", saveModelTiers);

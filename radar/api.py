@@ -13,6 +13,7 @@ from radar.cluster import ClusterSummary, get_clusters
 from radar.collect import run_collection, source_availability
 from radar.config import (
     MAX_WATCHLIST_ITEMS,
+    category_requires_qa,
     client_for_matched_term,
     effective_terms,
     get_settings,
@@ -25,23 +26,28 @@ from radar.config import (
     save_search_terms,
 )
 from radar.db import (
+    claim_alert,
     count_advertisements,
     get_alert_actions,
     get_alerts,
     get_cluster_brief,
     get_connection,
     get_incident_timeline,
+    get_snapshot_history,
     get_unscored_pain_points,
     init_db,
     log_alert_action,
+    release_alert,
     resolve_alert,
     save_cluster_brief,
     save_coa,
     save_exec_brief,
     save_incident_report,
     transition_incident,
+    write_alert,
 )
 from radar.leadtime import compute_lead_times, summarize_lead_times
+from radar.score import compute_velocity
 
 STATIC_DIR = Path(__file__).parent / "static"
 
@@ -94,6 +100,8 @@ def _alert_dict(row: tuple) -> dict:
         "coa_generated_at",
         "action_count",
         "resolved_at",
+        "claimed_by",
+        "claimed_at",
     )
     return dict(zip(keys, row))
 
@@ -194,6 +202,37 @@ def api_watching() -> list[dict]:
     for d in dicts:
         d["client"] = client_for_matched_term(d.get("matched_term"), search_config)
     return dicts
+
+
+@app.post("/api/watching/{post_id}/promote")
+def api_promote_to_alert(post_id: str) -> dict:
+    """Manually sends a Watching-tier post (never crossed the velocity
+    threshold) into the Alerts tab -- the footprint graph's "Send to Alerts"
+    action for a post a human judges worth tracking even though the
+    automated scoring never flagged it. Reuses run_scoring()'s exact
+    write path (radar/score.py) so a manually-promoted alert behaves
+    identically to an automatic one -- same qa_status gating, same schema.
+    """
+    conn = _connect()
+    try:
+        if get_alerts(conn, post_id=post_id):
+            raise HTTPException(status_code=400, detail="This post is already an alert.")
+        rows = get_unscored_pain_points(conn, post_id=post_id)
+        if not rows:
+            raise HTTPException(status_code=404, detail=f"No watching pain point found for {post_id}")
+        _, category, severity = rows[0][:3]
+
+        criteria = load_escalation_criteria()
+        qa_status = "pending" if category_requires_qa(criteria, category) else "not_required"
+        history = get_snapshot_history(conn, post_id)
+        velocity = compute_velocity(history) or 0.0
+        latest_score = history[-1][1] if history else 0.0
+
+        write_alert(conn, post_id, latest_score, velocity, category, severity, qa_status)
+        alert = _get_one_alert(conn, post_id)
+    finally:
+        conn.close()
+    return alert
 
 
 @app.get("/api/lead-time")
@@ -376,6 +415,39 @@ def api_alert_transition(post_id: str, body: IncidentTransition) -> dict:
     if not changed:
         raise HTTPException(status_code=404, detail=f"No alert found for {post_id}")
     return {"post_id": post_id, "incident_status": body.status, "coa": coa}
+
+
+class ClaimRequest(BaseModel):
+    claimed_by: str
+
+
+@app.post("/api/alerts/{post_id}/claim")
+def api_alert_claim(post_id: str, body: ClaimRequest) -> dict:
+    """Assigns the alert to a PM's personal Board tab (radar/static/dashboard.js's
+    Board view, which only shows claimed alerts). claimed_by is freeform text --
+    no auth system exists.
+    """
+    conn = _connect()
+    try:
+        changed = claim_alert(conn, post_id, body.claimed_by)
+    finally:
+        conn.close()
+    if not changed:
+        raise HTTPException(status_code=404, detail=f"No alert found for {post_id}")
+    return {"post_id": post_id, "claimed_by": body.claimed_by}
+
+
+@app.post("/api/alerts/{post_id}/release")
+def api_alert_release(post_id: str) -> dict:
+    """Clears a claim, handing the alert back to the team-wide Alerts pool."""
+    conn = _connect()
+    try:
+        changed = release_alert(conn, post_id)
+    finally:
+        conn.close()
+    if not changed:
+        raise HTTPException(status_code=404, detail=f"No alert found for {post_id}")
+    return {"post_id": post_id, "claimed_by": None}
 
 
 class AlertActionRequest(BaseModel):

@@ -4,6 +4,7 @@ import sqlite3
 from datetime import datetime, timedelta, timezone
 
 from radar.db import (
+    claim_alert,
     count_advertisements,
     get_alert_actions,
     get_alerts,
@@ -14,6 +15,7 @@ from radar.db import (
     get_unscored_pain_points,
     init_db,
     log_alert_action,
+    release_alert,
     save_cluster_brief,
     save_coa,
     save_exec_brief,
@@ -283,6 +285,54 @@ def test_get_unscored_pain_points_returns_latest_snapshot_author_and_engagement(
     assert row[13] == datetime(2024, 1, 1, 1, tzinfo=timezone.utc).isoformat()
 
 
+def test_get_unscored_pain_points_filters_by_post_id(tmp_path):
+    conn = get_connection(tmp_path / "radar.db")
+    init_db(conn)
+    now = datetime.now(timezone.utc).isoformat()
+    for post_id in ("t3_x", "t3_y"):
+        conn.execute(
+            """
+            INSERT INTO classifications (
+                post_id, is_pain_point, category, model_implicated, severity,
+                issue_summary, classifier_model, classified_at
+            ) VALUES (?, 1, 'product_bug', 'claude_api_general', 'med', 'a summary', 'test-model', ?)
+            """,
+            (post_id, now),
+        )
+        _seed_two_snapshots(conn, post_id)
+    conn.commit()
+
+    rows = get_unscored_pain_points(conn, post_id="t3_x")
+    conn.close()
+
+    assert len(rows) == 1
+    assert rows[0][0] == "t3_x"
+
+
+def test_get_unscored_pain_points_excludes_posts_that_already_have_an_alert(tmp_path):
+    conn = get_connection(tmp_path / "radar.db")
+    init_db(conn)
+    now = datetime.now(timezone.utc).isoformat()
+    conn.execute(
+        """
+        INSERT INTO classifications (
+            post_id, is_pain_point, category, model_implicated, severity,
+            issue_summary, classifier_model, classified_at
+        ) VALUES ('t3_already', 1, 'product_bug', 'claude_api_general', 'med', 'a summary',
+                  'test-model', ?)
+        """,
+        (now,),
+    )
+    _seed_two_snapshots(conn, "t3_already")
+    write_alert(conn, "t3_already", 10.0, 5.0, "product_bug", "med", "not_required")
+    conn.commit()
+
+    rows = get_unscored_pain_points(conn, post_id="t3_already")
+    conn.close()
+
+    assert rows == []
+
+
 def test_get_snapshot_history_collapses_same_run_duplicates(tmp_path):
     # A post appearing in both the "top" and "recent" search passes of one
     # collection run gets two snapshot rows written seconds apart, sharing a
@@ -497,9 +547,9 @@ def test_get_alerts_reports_action_count(tmp_path):
     _seed_two_snapshots(conn, "t3_count")
     conn.commit()
 
-    before = get_alerts(conn, post_id="t3_count")[0][-2]
+    before = get_alerts(conn, post_id="t3_count")[0][-4]
     log_alert_action(conn, "t3_count", "File engineering ticket")
-    after = get_alerts(conn, post_id="t3_count")[0][-2]
+    after = get_alerts(conn, post_id="t3_count")[0][-4]
     conn.close()
 
     assert before == 0
@@ -523,13 +573,113 @@ def test_get_alerts_reports_resolved_at(tmp_path):
     _seed_two_snapshots(conn, "t3_resolved")
     conn.commit()
 
-    before = get_alerts(conn, post_id="t3_resolved")[0][-1]
+    before = get_alerts(conn, post_id="t3_resolved")[0][-3]
     transition_incident(conn, "t3_resolved", "resolved")
-    after = get_alerts(conn, post_id="t3_resolved")[0][-1]
+    after = get_alerts(conn, post_id="t3_resolved")[0][-3]
     conn.close()
 
     assert before is None
     assert after is not None
+
+
+def test_claim_alert_sets_claimed_by_and_claimed_at(tmp_path):
+    conn = get_connection(tmp_path / "radar.db")
+    init_db(conn)
+    write_alert(conn, "t3_claim", 10.0, 5.0, "product_bug", "high", "not_required")
+
+    changed = claim_alert(conn, "t3_claim", "Alex")
+    row = conn.execute("SELECT claimed_by, claimed_at FROM alerts WHERE post_id = 't3_claim'").fetchone()
+    conn.close()
+
+    assert changed is True
+    assert row[0] == "Alex"
+    assert row[1]
+
+
+def test_claim_alert_returns_false_when_no_alert_exists(tmp_path):
+    conn = get_connection(tmp_path / "radar.db")
+    init_db(conn)
+
+    changed = claim_alert(conn, "t3_missing", "Alex")
+    conn.close()
+
+    assert changed is False
+
+
+def test_release_alert_clears_claim(tmp_path):
+    conn = get_connection(tmp_path / "radar.db")
+    init_db(conn)
+    write_alert(conn, "t3_release", 10.0, 5.0, "product_bug", "high", "not_required")
+    claim_alert(conn, "t3_release", "Alex")
+
+    changed = release_alert(conn, "t3_release")
+    row = conn.execute("SELECT claimed_by, claimed_at FROM alerts WHERE post_id = 't3_release'").fetchone()
+    conn.close()
+
+    assert changed is True
+    assert row == (None, None)
+
+
+def test_get_alerts_reports_claimed_by_and_claimed_at(tmp_path):
+    conn = get_connection(tmp_path / "radar.db")
+    init_db(conn)
+    write_alert(conn, "t3_claimcol", 10.0, 5.0, "product_bug", "high", "not_required")
+    conn.execute(
+        """
+        INSERT INTO classifications (
+            post_id, is_pain_point, category, model_implicated, severity,
+            issue_summary, classifier_model, classified_at
+        ) VALUES ('t3_claimcol', 1, 'product_bug', 'claude_api_general', 'high', 'a summary',
+                  'test-model', ?)
+        """,
+        (datetime.now(timezone.utc).isoformat(),),
+    )
+    _seed_two_snapshots(conn, "t3_claimcol")
+    conn.commit()
+
+    before = get_alerts(conn, post_id="t3_claimcol")[0][-2:]
+    claim_alert(conn, "t3_claimcol", "Alex")
+    after = get_alerts(conn, post_id="t3_claimcol")[0][-2:]
+    conn.close()
+
+    assert before == (None, None)
+    assert after[0] == "Alex"
+    assert after[1] is not None
+
+
+def test_migrate_adds_claim_columns_to_pre_existing_database(tmp_path):
+    # Simulates a database file created before schema v8 (no claimed_by/
+    # claimed_at columns) -- confirms init_db() adds them without losing data.
+    db_path = tmp_path / "old.db"
+    conn = sqlite3.connect(db_path)
+    conn.execute(
+        """
+        CREATE TABLE alerts (
+            id                            INTEGER PRIMARY KEY AUTOINCREMENT,
+            post_id                       TEXT NOT NULL,
+            triggered_at                  TEXT NOT NULL,
+            virality_score                REAL NOT NULL,
+            velocity                      REAL NOT NULL,
+            category                      TEXT NOT NULL,
+            severity                      TEXT NOT NULL,
+            qa_status                     TEXT NOT NULL
+        )
+        """
+    )
+    conn.execute(
+        "INSERT INTO alerts (post_id, triggered_at, virality_score, velocity, category, "
+        "severity, qa_status) VALUES ('t3_old3', '2024-01-01T00:00:00+00:00', 10.0, 5.0, "
+        "'product_bug', 'high', 'not_required')"
+    )
+    conn.commit()
+    conn.close()
+
+    conn = get_connection(db_path)
+    init_db(conn)
+
+    alerts_columns = {row[1] for row in conn.execute("PRAGMA table_info(alerts)").fetchall()}
+    conn.close()
+    assert {"claimed_by", "claimed_at"} <= alerts_columns
 
 
 def test_new_alert_defaults_to_open_incident_status(tmp_path):

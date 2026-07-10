@@ -15,6 +15,7 @@
     <button type="button" class="tab-button is-active" role="tab" aria-selected="true" aria-controls="tab-overview" data-tab="overview">Home</button>
     <button type="button" class="tab-button" role="tab" aria-selected="false" aria-controls="tab-watching" data-tab="watching">Watching</button>
     <button type="button" class="tab-button" role="tab" aria-selected="false" aria-controls="tab-alerts" data-tab="alerts">Alerts</button>
+    <button type="button" class="tab-button" role="tab" aria-selected="false" aria-controls="tab-board" data-tab="board">Board</button>
     <button type="button" class="tab-button" role="tab" aria-selected="false" aria-controls="tab-settings" data-tab="settings">Settings</button>
   </nav>
 </aside>
@@ -190,13 +191,17 @@
           <option value="mastodon">Mastodon</option>
         </select>
       </label>
-      <div class="view-toggle" role="tablist" aria-label="Alerts view">
-        <button type="button" class="view-toggle-btn is-active" data-view="table" role="tab" aria-selected="true">Table</button>
-        <button type="button" class="view-toggle-btn" data-view="board" role="tab" aria-selected="false">Board</button>
-      </div>
+      <label>Claiming as
+        <input type="text" id="claiming-as-input" placeholder="Your name" />
+      </label>
     </div>
 
-    <div class="card" id="alerts-table-view">
+    <p class="watching-caption">
+      Everything the system (or a manual send from the footprint graph) has flagged, for the whole
+      team -- claim a post to work it on your Board.
+    </p>
+
+    <div class="card">
       <table>
         <thead>
           <tr>
@@ -207,6 +212,7 @@
             <th class="num sortable-th" data-sort-key="velocity">Velocity</th>
             <th>QA status</th>
             <th>Incident</th>
+            <th>Claimed</th>
             <th>Summary</th>
             <th>Poster</th>
             <th>Posted</th>
@@ -216,19 +222,20 @@
           </tr>
         </thead>
         <tbody id="alerts-body">
-          <tr><td colspan="13" class="empty-state">Loading…</td></tr>
+          <tr><td colspan="14" class="empty-state">Loading…</td></tr>
         </tbody>
       </table>
     </div>
+  </section>
 
-    <div id="alerts-board-view" hidden>
-      <p class="watching-caption">
-        Drag a card to a new column to work it -- landing in Acknowledged, Mitigating, or Resolved
-        automatically generates a recommended Course of Action grounded in that category's
-        escalation-criteria playbook. Click a card for the full incident detail.
-      </p>
-      <div id="alerts-board"></div>
-    </div>
+  <section id="tab-board" class="tab-panel" role="tabpanel" data-tab="board" hidden>
+    <p class="watching-caption">
+      Your claimed posts, organized by incident stage. Drag a card to a new column to work it --
+      landing in Acknowledged, Mitigating, or Resolved automatically generates a recommended Course
+      of Action grounded in that category's escalation-criteria playbook. Click a card for the full
+      incident detail. Claim a post from the Alerts tab to bring it here.
+    </p>
+    <div id="alerts-board"></div>
 
     <div id="alert-card-modal" class="modal-overlay" hidden>
       <div class="modal-panel">
