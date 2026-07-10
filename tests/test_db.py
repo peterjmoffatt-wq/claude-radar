@@ -5,6 +5,7 @@ from datetime import datetime, timedelta, timezone
 
 from radar.db import (
     count_advertisements,
+    get_alert_actions,
     get_alerts,
     get_cluster_brief,
     get_connection,
@@ -12,6 +13,7 @@ from radar.db import (
     get_snapshot_history,
     get_unscored_pain_points,
     init_db,
+    log_alert_action,
     save_cluster_brief,
     save_coa,
     save_exec_brief,
@@ -419,6 +421,89 @@ def test_migrate_adds_coa_columns_to_pre_existing_tables(tmp_path):
     row = conn.execute("SELECT post_id, coa FROM alerts WHERE post_id = 't3_old2'").fetchone()
     conn.close()
     assert row == ("t3_old2", None)
+
+
+def test_migrate_creates_alert_actions_table_for_pre_existing_database(tmp_path):
+    # Simulates a database file created before schema v7 (no alert_actions
+    # table at all) -- confirms init_db() creates it without touching
+    # existing data.
+    db_path = tmp_path / "old.db"
+    conn = sqlite3.connect(db_path)
+    conn.execute(
+        """
+        CREATE TABLE alerts (
+            id                            INTEGER PRIMARY KEY AUTOINCREMENT,
+            post_id                       TEXT NOT NULL,
+            triggered_at                  TEXT NOT NULL,
+            virality_score                REAL NOT NULL,
+            velocity                      REAL NOT NULL,
+            category                      TEXT NOT NULL,
+            severity                      TEXT NOT NULL,
+            qa_status                     TEXT NOT NULL
+        )
+        """
+    )
+    conn.commit()
+    conn.close()
+
+    conn = get_connection(db_path)
+    init_db(conn)
+
+    tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
+    conn.close()
+    assert "alert_actions" in tables
+
+
+def test_log_alert_action_persists_and_get_alert_actions_returns_it(tmp_path):
+    conn = get_connection(tmp_path / "radar.db")
+    init_db(conn)
+    write_alert(conn, "t3_act", 10.0, 5.0, "credential_theft", "high", "not_required")
+
+    log_alert_action(conn, "t3_act", "Escalate to Security", note="Notified the on-call lead")
+    actions = get_alert_actions(conn, "t3_act")
+    conn.close()
+
+    assert len(actions) == 1
+    action_label, note, created_at = actions[0]
+    assert (action_label, note) == ("Escalate to Security", "Notified the on-call lead")
+    assert created_at
+
+
+def test_get_alert_actions_returns_empty_list_when_none_logged(tmp_path):
+    conn = get_connection(tmp_path / "radar.db")
+    init_db(conn)
+    write_alert(conn, "t3_noact", 10.0, 5.0, "product_bug", "high", "not_required")
+
+    actions = get_alert_actions(conn, "t3_noact")
+    conn.close()
+
+    assert actions == []
+
+
+def test_get_alerts_reports_action_count(tmp_path):
+    conn = get_connection(tmp_path / "radar.db")
+    init_db(conn)
+    write_alert(conn, "t3_count", 10.0, 5.0, "product_bug", "high", "not_required")
+    conn.execute(
+        """
+        INSERT INTO classifications (
+            post_id, is_pain_point, category, model_implicated, severity,
+            issue_summary, classifier_model, classified_at
+        ) VALUES ('t3_count', 1, 'product_bug', 'claude_api_general', 'high', 'a summary',
+                  'test-model', ?)
+        """,
+        (datetime.now(timezone.utc).isoformat(),),
+    )
+    _seed_two_snapshots(conn, "t3_count")
+    conn.commit()
+
+    before = get_alerts(conn, post_id="t3_count")[0][-1]
+    log_alert_action(conn, "t3_count", "File engineering ticket")
+    after = get_alerts(conn, post_id="t3_count")[0][-1]
+    conn.close()
+
+    assert before == 0
+    assert after == 1
 
 
 def test_new_alert_defaults_to_open_incident_status(tmp_path):

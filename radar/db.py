@@ -9,7 +9,7 @@ from radar.hashing import hash_author
 from radar.models import Classification, RawPost
 from radar.virality import virality_score
 
-SCHEMA_VERSION = "6"
+SCHEMA_VERSION = "7"
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS snapshots (
@@ -112,6 +112,20 @@ CREATE TABLE IF NOT EXISTS cluster_briefs (
     brief         TEXT NOT NULL,
     generated_at  TEXT NOT NULL
 );
+
+-- A human confirming a COA's recommendation was actually carried out --
+-- distinct from incident_events (which logs status transitions). Gates
+-- transition_incident()'s move to 'resolved': see radar/api.py's
+-- api_alert_transition().
+CREATE TABLE IF NOT EXISTS alert_actions (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    post_id       TEXT NOT NULL,
+    action_label  TEXT NOT NULL,
+    note          TEXT,
+    created_at    TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_alert_actions_post_id ON alert_actions(post_id);
 """
 
 
@@ -431,7 +445,8 @@ def get_alerts(
                ls.hashed_author, ls.likes, ls.comments, ls.score, ls.shares, ls.created_at,
                a.incident_status, a.exec_brief, a.exec_brief_generated_at,
                a.incident_report, a.incident_report_generated_at,
-               a.coa, a.coa_generated_at
+               a.coa, a.coa_generated_at,
+               (SELECT COUNT(*) FROM alert_actions aa WHERE aa.post_id = a.post_id) AS action_count
         FROM alerts a
         JOIN classifications c ON c.post_id = a.post_id
         JOIN (
@@ -654,6 +669,33 @@ def get_incident_timeline(
         )
         ORDER BY e.created_at ASC, e.id ASC
         """,
+        (post_id,),
+    ).fetchall()
+
+
+def log_alert_action(conn: sqlite3.Connection, post_id: str, action_label: str, note: str | None = None) -> None:
+    """Records that a human actually carried out a recommended action for
+    this alert -- distinct from transition_incident()'s status-change log.
+    Doesn't require an existing alert row (mirrors incident_events, which is
+    likewise never foreign-keyed) so callers don't need a separate existence
+    check before logging.
+    """
+    conn.execute(
+        "INSERT INTO alert_actions (post_id, action_label, note, created_at) VALUES (?, ?, ?, ?)",
+        (post_id, action_label, note, datetime.now(timezone.utc).isoformat()),
+    )
+    conn.commit()
+
+
+def get_alert_actions(conn: sqlite3.Connection, post_id: str) -> list[tuple[str, str | None, str]]:
+    """(action_label, note, created_at) for this post, oldest first -- shown
+    in the incident detail panel's "Actions taken" history, and used by
+    api_alert_transition() to gate a move to 'resolved' on at least one
+    logged action existing.
+    """
+    return conn.execute(
+        "SELECT action_label, note, created_at FROM alert_actions "
+        "WHERE post_id = ? ORDER BY created_at ASC, id ASC",
         (post_id,),
     ).fetchall()
 

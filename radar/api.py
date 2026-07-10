@@ -26,12 +26,14 @@ from radar.config import (
 )
 from radar.db import (
     count_advertisements,
+    get_alert_actions,
     get_alerts,
     get_cluster_brief,
     get_connection,
     get_incident_timeline,
     get_unscored_pain_points,
     init_db,
+    log_alert_action,
     resolve_alert,
     save_cluster_brief,
     save_coa,
@@ -90,6 +92,7 @@ def _alert_dict(row: tuple) -> dict:
         "incident_report_generated_at",
         "coa",
         "coa_generated_at",
+        "action_count",
     )
     return dict(zip(keys, row))
 
@@ -130,11 +133,13 @@ def api_alerts(
     try:
         rows = get_alerts(conn, status=status, category=category, severity=severity)
         search_config = load_search_terms()
+        criteria = load_escalation_criteria()
     finally:
         conn.close()
     dicts = [_alert_dict(row) for row in rows]
     for d in dicts:
         d["client"] = client_for_matched_term(d.get("matched_term"), search_config)
+        d["action_label"] = criteria.get(d["category"], {}).get("action_label", "Log action taken")
     return dicts
 
 
@@ -349,6 +354,11 @@ def api_alert_transition(post_id: str, body: IncidentTransition) -> dict:
     try:
         alert = _get_one_alert(conn, post_id)
 
+        if body.status == "resolved" and not get_alert_actions(conn, post_id):
+            raise HTTPException(
+                status_code=400, detail="Log at least one action before resolving this alert."
+            )
+
         coa = None
         if body.status in _COA_ELIGIBLE_STATUSES:
             settings = get_settings()
@@ -365,6 +375,41 @@ def api_alert_transition(post_id: str, body: IncidentTransition) -> dict:
     if not changed:
         raise HTTPException(status_code=404, detail=f"No alert found for {post_id}")
     return {"post_id": post_id, "incident_status": body.status, "coa": coa}
+
+
+class AlertActionRequest(BaseModel):
+    note: str | None = None
+
+
+@app.post("/api/alerts/{post_id}/actions")
+def api_alert_log_action(post_id: str, body: AlertActionRequest) -> dict:
+    """Records that a human carried out the category's recommended action for
+    this alert -- gates api_alert_transition()'s move to 'resolved'. The
+    label is looked up server-side from the alert's category (not accepted
+    from the request) so the log can't drift from what the board displays.
+    """
+    conn = _connect()
+    try:
+        alert = _get_one_alert(conn, post_id)
+        criteria = load_escalation_criteria()
+        action_label = criteria.get(alert["category"], {}).get("action_label", "Log action taken")
+        log_alert_action(conn, post_id, action_label, note=body.note)
+    finally:
+        conn.close()
+    return {"post_id": post_id, "action_label": action_label, "note": body.note}
+
+
+@app.get("/api/alerts/{post_id}/actions")
+def api_alert_actions(post_id: str) -> list[dict]:
+    conn = _connect()
+    try:
+        rows = get_alert_actions(conn, post_id)
+    finally:
+        conn.close()
+    return [
+        {"action_label": action_label, "note": note, "created_at": created_at}
+        for action_label, note, created_at in rows
+    ]
 
 
 @app.get("/api/alerts/{post_id}/timeline")
@@ -392,6 +437,8 @@ def _get_one_alert(conn, post_id: str) -> dict:
         raise HTTPException(status_code=404, detail=f"No alert found for {post_id}")
     alert = _alert_dict(rows[0])
     alert["client"] = client_for_matched_term(alert.get("matched_term"), load_search_terms())
+    criteria = load_escalation_criteria()
+    alert["action_label"] = criteria.get(alert["category"], {}).get("action_label", "Log action taken")
     return alert
 
 

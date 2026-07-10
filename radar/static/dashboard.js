@@ -1838,10 +1838,54 @@
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ status, note: note || null }),
       });
-      if (!res.ok) throw new Error("transition request failed");
+      if (!res.ok) {
+        const body = await res.json().catch(() => null);
+        throw new Error((body && body.detail) || "transition request failed");
+      }
       await loadAlerts();
     } catch (err) {
-      window.alert("Failed to update incident status.");
+      window.alert(err.message || "Failed to update incident status.");
+    }
+  }
+
+  async function logAlertAction(postId, note) {
+    try {
+      const res = await fetch(`/api/alerts/${encodeURIComponent(postId)}/actions`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ note: note || null }),
+      });
+      if (!res.ok) throw new Error("action request failed");
+      await loadAlerts();
+      return true;
+    } catch (err) {
+      window.alert("Failed to log action.");
+      return false;
+    }
+  }
+
+  async function loadAlertActions(postId, listEl) {
+    try {
+      const actions = await fetchJSON(`/api/alerts/${encodeURIComponent(postId)}/actions`);
+      listEl.textContent = "";
+      if (!actions.length) {
+        const li = document.createElement("li");
+        li.className = "empty-state";
+        li.textContent = "No actions logged yet.";
+        listEl.appendChild(li);
+        return;
+      }
+      actions.forEach((a) => {
+        const li = document.createElement("li");
+        li.textContent = `${formatDate(a.created_at)} — ${a.action_label}${a.note ? ": " + a.note : ""}`;
+        listEl.appendChild(li);
+      });
+    } catch (err) {
+      listEl.textContent = "";
+      const li = document.createElement("li");
+      li.className = "empty-state";
+      li.textContent = "Failed to load actions.";
+      listEl.appendChild(li);
     }
   }
 
@@ -1900,6 +1944,10 @@
         btn.type = "button";
         if (status === "resolved") btn.className = "approve";
         btn.textContent = label;
+        if (status === "resolved" && !(alert.action_count > 0)) {
+          btn.disabled = true;
+          btn.title = "Log at least one action before resolving this alert.";
+        }
         btn.addEventListener("click", () => transitionIncident(alert.post_id, status, noteInput.value.trim()));
         actionRow.appendChild(btn);
       });
@@ -1918,6 +1966,44 @@
     timeline.appendChild(timelineList);
     wrapper.appendChild(timeline);
     loadIncidentTimeline(alert.post_id, timelineList);
+
+    // -- actions taken --
+    const actionsSection = document.createElement("div");
+    actionsSection.className = "incident-section";
+    const actionsHeading = document.createElement("h4");
+    actionsHeading.textContent = "Actions taken";
+    actionsSection.appendChild(actionsHeading);
+
+    const actionNoteInput = document.createElement("textarea");
+    actionNoteInput.className = "incident-note-input";
+    actionNoteInput.rows = 2;
+    actionNoteInput.placeholder = "Optional note (defaults to the current recommendation)...";
+    actionNoteInput.value = alert.coa || "";
+    actionsSection.appendChild(actionNoteInput);
+
+    const logActionRow = document.createElement("div");
+    logActionRow.className = "actions";
+    const logActionBtn = document.createElement("button");
+    logActionBtn.type = "button";
+    logActionBtn.textContent = alert.action_label || "Log action taken";
+    logActionRow.appendChild(logActionBtn);
+    actionsSection.appendChild(logActionRow);
+
+    const actionsList = document.createElement("ul");
+    actionsList.className = "incident-timeline";
+    actionsSection.appendChild(actionsList);
+    wrapper.appendChild(actionsSection);
+    loadAlertActions(alert.post_id, actionsList);
+
+    logActionBtn.addEventListener("click", async () => {
+      logActionBtn.disabled = true;
+      const ok = await logAlertAction(alert.post_id, actionNoteInput.value.trim());
+      if (ok) {
+        alert.action_count = (alert.action_count || 0) + 1;
+        loadAlertActions(alert.post_id, actionsList);
+      }
+      logActionBtn.disabled = false;
+    });
 
     // -- exec brief --
     const briefSection = document.createElement("div");
@@ -2104,6 +2190,26 @@
     coaBox.textContent = alert.coa || "";
     card.appendChild(coaBox);
 
+    const actionsRow = document.createElement("div");
+    actionsRow.className = "board-card-actions";
+    const logActionBtn = document.createElement("button");
+    logActionBtn.type = "button";
+    logActionBtn.textContent = alert.action_label || "Log action taken";
+    logActionBtn.addEventListener("click", async (evt) => {
+      evt.stopPropagation();
+      logActionBtn.disabled = true;
+      await logAlertAction(alert.post_id, alert.coa || "");
+      logActionBtn.disabled = false;
+    });
+    actionsRow.appendChild(logActionBtn);
+    if (alert.action_count > 0) {
+      const loggedTag = document.createElement("span");
+      loggedTag.className = "action-logged-tag";
+      loggedTag.textContent = "Action logged";
+      actionsRow.appendChild(loggedTag);
+    }
+    card.appendChild(actionsRow);
+
     const openBtn = document.createElement("button");
     openBtn.type = "button";
     openBtn.className = "detail-jump-link";
@@ -2175,6 +2281,10 @@
         const postId = evt.dataTransfer.getData("text/plain");
         const dragged = alerts.find((a) => a.post_id === postId);
         if (!postId || !dragged || (dragged.incident_status || "open") === status) return;
+        if (status === "resolved" && !(dragged.action_count > 0)) {
+          window.alert("Log an action before resolving this alert.");
+          return;
+        }
         handleBoardDrop(postId, status);
       });
 
@@ -2600,6 +2710,7 @@
         requires_qa: false,
         velocity_threshold: null,
         response_template: "",
+        action_label: "",
       };
 
       const row = document.createElement("div");
@@ -2657,6 +2768,22 @@
         };
       });
       row.appendChild(templateInput);
+
+      const actionLabelLabel = document.createElement("label");
+      actionLabelLabel.className = "escalation-criteria-action-label";
+      actionLabelLabel.appendChild(document.createTextNode("Board action button text"));
+      const actionLabelInput = document.createElement("input");
+      actionLabelInput.type = "text";
+      actionLabelInput.placeholder = "Log action taken";
+      actionLabelInput.value = criteria.action_label || "";
+      actionLabelInput.addEventListener("input", () => {
+        escalationCriteria[category] = {
+          ...escalationCriteria[category],
+          action_label: actionLabelInput.value,
+        };
+      });
+      actionLabelLabel.appendChild(actionLabelInput);
+      row.appendChild(actionLabelLabel);
 
       container.appendChild(row);
     });

@@ -589,6 +589,7 @@ def test_api_alert_timeline_returns_events_in_order(client, load_anthropic_fixtu
     )
 
     test_client.post("/api/alerts/t3_a/transition", json={"status": "acknowledged"})
+    test_client.post("/api/alerts/t3_a/actions", json={"note": "Notified the team"})
     test_client.post("/api/alerts/t3_a/transition", json={"status": "resolved", "note": "Fixed"})
 
     response = test_client.get("/api/alerts/t3_a/timeline")
@@ -674,6 +675,7 @@ def test_api_alert_report_generates_and_persists(client, load_anthropic_fixture)
     respx.post(ANTHROPIC_API_URL).mock(
         return_value=httpx.Response(200, json=load_anthropic_fixture("brief_text_response.json"))
     )
+    test_client.post("/api/alerts/t3_a/actions", json={"note": "Notified the team"})
     test_client.post("/api/alerts/t3_a/transition", json={"status": "resolved", "note": "Fixed upstream"})
 
     response = test_client.post("/api/alerts/t3_a/report", json={"closing_note": "Add a regression test."})
@@ -751,6 +753,7 @@ def test_api_put_escalation_criteria_persists_and_affects_scoring(tmp_path, monk
         "requires_qa": True,
         "velocity_threshold": 3.0,
         "response_template": "Escalate immediately.",
+        "action_label": "File engineering ticket",
     }
     # Persisted to disk, not just the response -- and other categories survive untouched.
     reloaded = config_module.load_escalation_criteria(yaml_path)
@@ -952,3 +955,67 @@ def test_api_alert_transition_coa_mentions_client_when_present(tmp_path, monkeyp
 
     assert response.status_code == 200
     assert "McDonald's" in response.json()["coa"]
+
+
+def test_api_alert_log_action_persists_and_is_listed(client):
+    test_client, settings = client
+    conn = get_connection(settings.database_path)
+    init_db(conn)
+    _seed_alert(conn, "t3_act", category="credential_theft")
+    conn.close()
+
+    response = test_client.post("/api/alerts/t3_act/actions", json={"note": "Notified security"})
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["action_label"] == "Escalate to Security"
+    assert body["note"] == "Notified security"
+
+    actions = test_client.get("/api/alerts/t3_act/actions").json()
+    assert len(actions) == 1
+    assert actions[0]["action_label"] == "Escalate to Security"
+    assert actions[0]["note"] == "Notified security"
+
+
+def test_api_alerts_include_action_label_and_zero_action_count(client):
+    test_client, settings = client
+    conn = get_connection(settings.database_path)
+    init_db(conn)
+    _seed_alert(conn, "t3_a", category="product_bug")
+    conn.close()
+
+    alerts = test_client.get("/api/alerts").json()
+
+    assert alerts[0]["action_label"] == "File engineering ticket"
+    assert alerts[0]["action_count"] == 0
+
+
+def test_api_alert_transition_to_resolved_without_action_is_rejected(client):
+    test_client, settings = client
+    conn = get_connection(settings.database_path)
+    init_db(conn)
+    _seed_alert(conn, "t3_a")
+    conn.close()
+
+    response = test_client.post("/api/alerts/t3_a/transition", json={"status": "resolved"})
+
+    assert response.status_code == 400
+    assert "Log at least one action" in response.json()["detail"]
+
+
+@respx.mock
+def test_api_alert_transition_to_resolved_succeeds_after_action_logged(client, load_anthropic_fixture):
+    test_client, settings = client
+    conn = get_connection(settings.database_path)
+    init_db(conn)
+    _seed_alert(conn, "t3_a")
+    conn.close()
+    respx.post(ANTHROPIC_API_URL).mock(
+        return_value=httpx.Response(200, json=load_anthropic_fixture("brief_text_response.json"))
+    )
+
+    test_client.post("/api/alerts/t3_a/actions", json={"note": "Filed the ticket"})
+    response = test_client.post("/api/alerts/t3_a/transition", json={"status": "resolved"})
+
+    assert response.status_code == 200
+    assert response.json()["incident_status"] == "resolved"

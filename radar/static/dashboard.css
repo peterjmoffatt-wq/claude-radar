@@ -1171,6 +1171,26 @@ button.detail-jump-link:hover {
   resize: vertical;
 }
 
+.escalation-criteria-action-label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--text-secondary);
+  margin-top: 6px;
+}
+
+.escalation-criteria-action-label input {
+  flex: 1;
+  font: inherit;
+  font-size: 12px;
+  padding: 4px 6px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface-1);
+  color: var(--text-primary);
+}
+
 tbody tr {
   transition: background-color 1.2s ease;
 }
@@ -1332,6 +1352,33 @@ tbody tr {
 
 .board-card-coa:empty {
   display: none;
+}
+
+.board-card-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 6px;
+}
+
+.board-card-actions button {
+  font-size: 11px;
+  padding: 3px 8px;
+}
+
+/* A plain text pill, not an icon -- see feedback: icon-as-status-signal read
+   as unpolished. Reuses the --status-good ramp since a logged action is a
+   positive/complete signal, distinct from --status-warning (recurring) and
+   --series-1 (flagship). */
+.action-logged-tag {
+  display: inline-block;
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--status-good);
+  border: 1px solid var(--status-good);
+  border-radius: 999px;
+  padding: 1px 6px;
+  white-space: nowrap;
 }
 
 /* -- alert card modal -- */

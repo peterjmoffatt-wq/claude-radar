@@ -65,47 +65,55 @@ DEFAULT_ESCALATION_CRITERIA: dict[str, dict[str, Any]] = {
         "velocity_threshold": None,
         "response_template": "Confirm the abuse pattern (rate limits, scripted misuse) with "
         "eng before any public response. Not customer-facing until confirmed.",
+        "action_label": "Confirm with engineering",
     },
     "product_bug": {
         "requires_qa": False,
         "velocity_threshold": None,
         "response_template": "Reproduce with eng, get a fix/workaround ETA, then respond with "
         "what's confirmed -- avoid speculating on cause publicly.",
+        "action_label": "File engineering ticket",
     },
     "ux_confusion": {
         "requires_qa": False,
         "velocity_threshold": None,
         "response_template": "Low urgency unless velocity is high. A short clarifying reply "
         "or docs link is usually enough.",
+        "action_label": "Send clarifying reply",
     },
     "messaging_gap": {
         "requires_qa": False,
         "velocity_threshold": None,
         "response_template": "Loop in Comms/PMM -- usually a documentation or "
         "expectation-setting gap, not a bug.",
+        "action_label": "Notify Comms/PMM",
     },
     "credential_theft": {
         "requires_qa": True,
         "velocity_threshold": None,
         "response_template": "Escalate to security immediately. Do not confirm specifics "
         "publicly. Coordinate a private response with the reporter if possible.",
+        "action_label": "Escalate to Security",
     },
     "abuse": {
         "requires_qa": True,
         "velocity_threshold": None,
         "response_template": "Escalate to Trust & Safety. Do not engage publicly until T&S "
         "has assessed scope and intent.",
+        "action_label": "Escalate to Trust & Safety",
     },
     "safety": {
         "requires_qa": True,
         "velocity_threshold": None,
         "response_template": "Escalate immediately to Safety and executive channels. Treat "
         "as highest priority until triaged.",
+        "action_label": "Escalate to Safety & Exec",
     },
     "other": {
         "requires_qa": False,
         "velocity_threshold": None,
         "response_template": "Triage manually -- doesn't fit an existing category cleanly.",
+        "action_label": "Log manual triage",
     },
 }
 

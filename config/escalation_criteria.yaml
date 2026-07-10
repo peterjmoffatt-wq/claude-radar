@@ -1,5 +1,7 @@
 # Per-category escalation criteria: whether it requires human QA, an
-# optional velocity-threshold override, and a first-response playbook.
+# optional velocity-threshold override, a first-response playbook, and the
+# short action-button label shown on the Alerts board (see radar/db.py's
+# alert_actions table / radar/api.py's /actions endpoint).
 # Dashboard-editable (Settings tab) -- see radar/config.py.
 categories:
   api_abuse:
@@ -7,37 +9,45 @@ categories:
     velocity_threshold: null
     response_template: Confirm the abuse pattern (rate limits, scripted misuse) with
       eng before any public response. Not customer-facing until confirmed.
+    action_label: Confirm with engineering
   product_bug:
     requires_qa: false
     velocity_threshold: null
     response_template: Reproduce with eng, get a fix/workaround ETA, then respond
       with what's confirmed -- avoid speculating on cause publicly.
+    action_label: File engineering ticket
   ux_confusion:
     requires_qa: false
     velocity_threshold: null
     response_template: Low urgency unless velocity is high. A short clarifying reply
       or docs link is usually enough.
+    action_label: Send clarifying reply
   messaging_gap:
     requires_qa: false
     velocity_threshold: null
     response_template: Loop in Comms/PMM -- usually a documentation or expectation-setting
       gap, not a bug.
+    action_label: Notify Comms/PMM
   credential_theft:
     requires_qa: true
     velocity_threshold: null
     response_template: Escalate to security immediately. Do not confirm specifics
       publicly. Coordinate a private response with the reporter if possible.
+    action_label: Escalate to Security
   abuse:
     requires_qa: true
     velocity_threshold: null
     response_template: Escalate to Trust & Safety. Do not engage publicly until T&S
       has assessed scope and intent.
+    action_label: Escalate to Trust & Safety
   safety:
     requires_qa: true
     velocity_threshold: null
     response_template: Escalate immediately to Safety and executive channels. Treat
       as highest priority until triaged.
+    action_label: Escalate to Safety & Exec
   other:
     requires_qa: false
     velocity_threshold: null
     response_template: Triage manually -- doesn't fit an existing category cleanly.
+    action_label: Log manual triage

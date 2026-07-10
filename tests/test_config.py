@@ -159,6 +159,7 @@ def test_load_escalation_criteria_fills_in_category_missing_from_saved_file(tmp_
         "requires_qa": False,
         "velocity_threshold": 5.0,
         "response_template": "custom template",
+        "action_label": "Escalate to Safety & Exec",
     }
     # A category absent from the saved file still gets its full default row.
     assert criteria["product_bug"] == DEFAULT_ESCALATION_CRITERIA["product_bug"]
