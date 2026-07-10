@@ -11,17 +11,20 @@ from pydantic import BaseModel
 from radar.brief import BriefFacts, generate_coa, generate_exec_brief, generate_incident_report
 from radar.cluster import ClusterSummary, get_clusters
 from radar.collect import run_collection, source_availability
+from radar.classify import run_classification
 from radar.config import (
     MAX_WATCHLIST_ITEMS,
     category_requires_qa,
     client_for_matched_term,
     effective_terms,
     get_settings,
+    load_classify_schedule_config,
     load_escalation_criteria,
     load_model_tiers,
     load_schedule_config,
     load_search_terms,
     protection_tier_for,
+    save_classify_schedule_config,
     save_escalation_criteria,
     save_model_tiers,
     save_schedule_config,
@@ -35,13 +38,13 @@ from radar.db import (
     get_cluster_brief,
     get_connection,
     get_incident_timeline,
+    get_last_classified_at,
     get_last_collected_at,
     get_snapshot_history,
     get_unscored_pain_points,
     init_db,
     log_alert_action,
     release_alert,
-    resolve_alert,
     save_cluster_brief,
     save_coa,
     save_exec_brief,
@@ -138,12 +141,10 @@ def _facts_from_cluster(cluster: ClusterSummary) -> BriefFacts:
 
 
 @app.get("/api/alerts")
-def api_alerts(
-    status: str | None = None, category: str | None = None, severity: str | None = None
-) -> list[dict]:
+def api_alerts(category: str | None = None, severity: str | None = None) -> list[dict]:
     conn = _connect()
     try:
-        rows = get_alerts(conn, status=status, category=category, severity=severity)
+        rows = get_alerts(conn, category=category, severity=severity)
         search_config = load_search_terms()
         criteria = load_escalation_criteria()
     finally:
@@ -307,6 +308,19 @@ def api_collect(body: CollectRequest) -> dict:
     }
 
 
+@app.post("/api/classify")
+def api_classify() -> dict:
+    """Triggers a real classification pass over whatever's currently
+    unclassified (up to CLASSIFY_BATCH_LIMIT posts) and reports what happened.
+    Runs synchronously in-request, same "fine at this scale" tradeoff as
+    /api/collect above. Calls the paid Anthropic API -- unlike /api/collect,
+    this isn't run implicitly by anything else in the UI.
+    """
+    settings = get_settings()
+    result = run_classification(settings)
+    return {"posts_classified": result.posts_classified, "skipped": result.skipped}
+
+
 def _search_terms_payload(config: dict) -> dict:
     return {
         "terms": config.get("terms", []),
@@ -349,27 +363,6 @@ def api_update_search_terms(body: SearchTermsUpdate) -> dict:
 
     save_search_terms(cleaned)
     return _search_terms_payload(load_search_terms())
-
-
-class ReviewDecision(BaseModel):
-    decision: Literal["approved", "rejected"]
-
-
-@app.post("/api/alerts/{post_id}/review")
-def api_review(post_id: str, body: ReviewDecision) -> dict:
-    conn = _connect()
-    try:
-        changed = resolve_alert(conn, post_id, body.decision)
-        if changed and body.decision == "rejected":
-            # A rejected alert isn't a real incident to keep working --
-            # independent of qa_status, so this is a separate transition, not
-            # a side effect baked into resolve_alert() itself.
-            transition_incident(conn, post_id, "false_positive", note="Auto-closed: QA rejected")
-    finally:
-        conn.close()
-    if not changed:
-        raise HTTPException(status_code=404, detail=f"No pending alert found for {post_id}")
-    return {"post_id": post_id, "qa_status": body.decision}
 
 
 IncidentStatus = Literal["open", "acknowledged", "mitigating", "resolved", "false_positive"]
@@ -652,6 +645,31 @@ def api_update_schedule(body: ScheduleUpdate) -> dict:
     tick, so this takes effect within CHECK_INTERVAL_SECONDS, no restart.
     """
     return save_schedule_config({"enabled": body.enabled, "interval_seconds": body.interval_seconds})
+
+
+class ClassifyScheduleUpdate(BaseModel):
+    enabled: bool
+    interval_seconds: int
+
+
+@app.get("/api/classify-schedule")
+def api_get_classify_schedule() -> dict:
+    conn = _connect()
+    try:
+        last_classified_at = get_last_classified_at(conn)
+    finally:
+        conn.close()
+    return {
+        **load_classify_schedule_config(),
+        "last_classified_at": last_classified_at.isoformat() if last_classified_at else None,
+    }
+
+
+@app.put("/api/classify-schedule")
+def api_update_classify_schedule(body: ClassifyScheduleUpdate) -> dict:
+    """Same shape as /api/schedule above, for the classify scheduler --
+    independent config/classify_schedule.yaml, independent interval."""
+    return save_classify_schedule_config({"enabled": body.enabled, "interval_seconds": body.interval_seconds})
 
 
 # Mounted last so the /api/* routes above take precedence over this catch-all.

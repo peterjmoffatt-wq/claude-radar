@@ -1,0 +1,8 @@
+# Automatic classification: whether radar serve's background scheduler
+# also runs classify passes (not just collection), and how often. Off by
+# default -- unlike collection this calls the paid Anthropic API, so this
+# is a separate opt-in from config/schedule.yaml, not folded into it.
+# Dashboard-editable (Settings tab) -- see radar/config.py and
+# radar/scheduler.py.
+enabled: true
+interval_seconds: 7200

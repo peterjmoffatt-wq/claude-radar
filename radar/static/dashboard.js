@@ -3,21 +3,13 @@
 
   const SVG_NS = "http://www.w3.org/2000/svg";
 
-  const STATUS_META = {
-    pending: { dot: "warning", label: "Pending review" },
-    approved: { dot: "good", label: "Approved" },
-    rejected: { dot: "muted", label: "Rejected" },
-    not_required: { dot: "muted", label: "Not required" },
-  };
-
   const SEVERITY_META = {
     high: { dot: "critical", label: "High" },
     med: { dot: "warning", label: "Med" },
     low: { dot: "good", label: "Low" },
   };
 
-  // Incident lifecycle -- independent of qa_status (see radar/db.py's
-  // transition_incident()). Only 4 dot colors exist (good/warning/critical/
+  // Incident lifecycle. Only 4 dot colors exist (good/warning/critical/
   // muted); acknowledged and mitigating share "warning" since both just mean
   // "someone's actively on it," distinguished by label, not color.
   const INCIDENT_META = {
@@ -29,8 +21,8 @@
   };
 
   // The next logical forward action(s) offered from each incident state --
-  // "false_positive" is a manual escape hatch (or the automatic QA-reject
-  // outcome), not something to suggest as a "next" step to click toward.
+  // "false_positive" is a manual escape hatch (drag a Board card there
+  // directly), not something to suggest as a "next" step to click toward.
   const INCIDENT_NEXT_ACTIONS = {
     open: [{ status: "acknowledged", label: "Acknowledge" }],
     acknowledged: [
@@ -1015,12 +1007,7 @@
             promoteBtn.disabled = true;
             promoteBtn.textContent = "Sending…";
             try {
-              const res = await fetch(
-                `/api/watching/${encodeURIComponent(n.member.post_id)}/promote`,
-                { method: "POST" }
-              );
-              if (!res.ok) throw new Error("promote request failed");
-              const alert = await res.json();
+              const alert = await promoteWatchingPostToAlert(n.member.post_id);
               // Instant feedback in the still-open panel -- the node's own
               // circle (hollow -> solid) catches up once the background
               // reload below rebuilds the graph with fresh data.
@@ -1464,6 +1451,20 @@
 
   const SEVERITY_RANK = { high: 3, med: 2, low: 1 };
 
+  // The lifecycle column sorts by its meaningful order (declaration order of
+  // INCIDENT_META above, e.g. open before resolved), not alphabetically --
+  // derived from the same object literal the badge already renders from, so
+  // there's one source of truth for "what order do these statuses go in."
+  const INCIDENT_RANK = Object.fromEntries(Object.keys(INCIDENT_META).map((k, i) => [k, i]));
+
+  // A single sortable number for the Engagement column's multi-metric
+  // display (👍/💬/↑/⇄ are different units on different platforms -- this
+  // isn't meant to be a precise cross-platform score, just "more reactions
+  // of any kind sorts higher").
+  function engagementTotal(r) {
+    return (r.likes || 0) + (r.comments || 0) + (r.score || 0) + (r.shares || 0);
+  }
+
   function applySort(rows, sortState, accessors) {
     if (!sortState.key) return rows;
     const accessor = accessors[sortState.key];
@@ -1520,8 +1521,13 @@
 
   const WATCHING_SORT_ACCESSORS = {
     platform: (r) => (PLATFORM_LABEL[r.platform] || r.platform || "").toLowerCase(),
+    matched_term: (r) => (r.matched_term || "").toLowerCase(),
     category: (r) => formatCategory(r.category).toLowerCase(),
     severity: (r) => SEVERITY_RANK[r.severity] || 0,
+    summary: (r) => (r.issue_summary || "").toLowerCase(),
+    poster: (r) => (r.author || "").toLowerCase(),
+    posted: (r) => r.created_at || "",
+    engagement: (r) => engagementTotal(r),
   };
 
   let watchingAllRows = [];
@@ -1560,12 +1566,21 @@
       tbody.textContent = "";
       const tr = document.createElement("tr");
       const td = document.createElement("td");
-      td.colSpan = 9;
+      td.colSpan = 10;
       td.className = "empty-state";
       td.textContent = "Failed to load.";
       tr.appendChild(td);
       tbody.appendChild(tr);
     }
+  }
+
+  // Shared with the footprint graph's own "Send to Alerts" button
+  // (renderFootprintGraph's node-detail panel, above) -- same endpoint, same
+  // manual-escalation meaning, just triggered from a different view.
+  async function promoteWatchingPostToAlert(postId) {
+    const res = await fetch(`/api/watching/${encodeURIComponent(postId)}/promote`, { method: "POST" });
+    if (!res.ok) throw new Error("promote request failed");
+    return res.json();
   }
 
   function renderWatching(tbody, rows, totalCount) {
@@ -1579,7 +1594,7 @@
     if (!rows.length) {
       const tr = document.createElement("tr");
       const td = document.createElement("td");
-      td.colSpan = 9;
+      td.colSpan = 10;
       td.className = "empty-state";
       td.textContent = "Nothing waiting -- every classified pain point has either alerted or been ruled out.";
       tr.appendChild(td);
@@ -1629,6 +1644,28 @@
         postTd.appendChild(link);
       }
 
+      const actionsTd = document.createElement("td");
+      const rowActions = document.createElement("div");
+      rowActions.className = "actions";
+      const escalateBtn = document.createElement("button");
+      escalateBtn.type = "button";
+      escalateBtn.title = "Manually send this post to the Alerts tab, even though it hasn't crossed the velocity threshold on its own.";
+      escalateBtn.textContent = "Escalate";
+      escalateBtn.addEventListener("click", async () => {
+        escalateBtn.disabled = true;
+        escalateBtn.textContent = "Sending…";
+        try {
+          await promoteWatchingPostToAlert(row.post_id);
+          loadAllDashboardData();
+        } catch (err) {
+          window.alert("Failed to send this post to Alerts.");
+          escalateBtn.disabled = false;
+          escalateBtn.textContent = "Escalate";
+        }
+      });
+      rowActions.appendChild(escalateBtn);
+      actionsTd.appendChild(rowActions);
+
       tr.appendChild(platformTd);
       tr.appendChild(matchedTermTd);
       tr.appendChild(categoryTd);
@@ -1638,6 +1675,7 @@
       tr.appendChild(postedTd);
       tr.appendChild(engagementTd);
       tr.appendChild(postTd);
+      tr.appendChild(actionsTd);
       tbody.appendChild(tr);
     });
   }
@@ -1646,9 +1684,16 @@
 
   const ALERTS_SORT_ACCESSORS = {
     platform: (r) => (PLATFORM_LABEL[r.platform] || r.platform || "").toLowerCase(),
+    matched_term: (r) => (r.matched_term || "").toLowerCase(),
     category: (r) => formatCategory(r.category).toLowerCase(),
     severity: (r) => SEVERITY_RANK[r.severity] || 0,
     velocity: (r) => r.velocity,
+    incident: (r) => INCIDENT_RANK[r.incident_status] ?? 0,
+    claimed: (r) => (r.claimed_by || "").toLowerCase(),
+    summary: (r) => (r.issue_summary || "").toLowerCase(),
+    poster: (r) => (r.author || "").toLowerCase(),
+    posted: (r) => r.created_at || "",
+    engagement: (r) => engagementTotal(r),
   };
 
   let alertsAllRows = [];
@@ -1656,16 +1701,15 @@
 
   function currentFilters() {
     return {
-      status: document.getElementById("filter-status").value,
       category: document.getElementById("filter-category").value,
       severity: document.getElementById("filter-severity").value,
       platform: document.getElementById("filter-alerts-platform").value,
     };
   }
 
-  // Status/category/severity are server-side filters (existing /api/alerts
-  // params); platform is applied client-side against the fetched set below,
-  // alongside sorting, without needing a new server-side query param.
+  // Category/severity are server-side filters (existing /api/alerts params);
+  // platform is applied client-side against the fetched set below, alongside
+  // sorting, without needing a new server-side query param.
   function applyAlertsView() {
     const tbody = document.getElementById("alerts-body");
     const { platform } = currentFilters();
@@ -1684,7 +1728,6 @@
 
     const filters = currentFilters();
     const params = new URLSearchParams();
-    if (filters.status) params.set("status", filters.status);
     if (filters.category) params.set("category", filters.category);
     if (filters.severity) params.set("severity", filters.severity);
 
@@ -1695,7 +1738,7 @@
       tbody.textContent = "";
       const tr = document.createElement("tr");
       const td = document.createElement("td");
-      td.colSpan = 14;
+      td.colSpan = 13;
       td.className = "empty-state";
       td.textContent = "Failed to load alerts.";
       tr.appendChild(td);
@@ -1716,7 +1759,7 @@
     if (!alerts.length) {
       const tr = document.createElement("tr");
       const td = document.createElement("td");
-      td.colSpan = 14;
+      td.colSpan = 13;
       td.className = "empty-state";
       td.textContent = "No alerts match these filters.";
       tr.appendChild(td);
@@ -1743,9 +1786,6 @@
       const velocityTd = document.createElement("td");
       velocityTd.className = "num";
       velocityTd.textContent = a.velocity.toFixed(1);
-
-      const qaTd = document.createElement("td");
-      qaTd.appendChild(badge(STATUS_META[a.qa_status] || { dot: "muted", label: a.qa_status }));
 
       const incidentTd = document.createElement("td");
       incidentTd.appendChild(
@@ -1795,21 +1835,6 @@
       const actions = document.createElement("div");
       actions.className = "actions";
 
-      if (a.qa_status === "pending") {
-        const approveBtn = document.createElement("button");
-        approveBtn.className = "approve";
-        approveBtn.textContent = "Approve";
-        approveBtn.addEventListener("click", () => review(a.post_id, "approved"));
-
-        const rejectBtn = document.createElement("button");
-        rejectBtn.className = "reject";
-        rejectBtn.textContent = "Reject";
-        rejectBtn.addEventListener("click", () => review(a.post_id, "rejected"));
-
-        actions.appendChild(approveBtn);
-        actions.appendChild(rejectBtn);
-      }
-
       const claimBtn = document.createElement("button");
       claimBtn.type = "button";
       if (a.claimed_by) {
@@ -1844,7 +1869,6 @@
       tr.appendChild(categoryTd);
       tr.appendChild(severityTd);
       tr.appendChild(velocityTd);
-      tr.appendChild(qaTd);
       tr.appendChild(incidentTd);
       tr.appendChild(claimedTd);
       tr.appendChild(summaryTd);
@@ -1859,20 +1883,6 @@
         openAlertDetail(tr, a, detailsBtn);
       }
     });
-  }
-
-  async function review(postId, decision) {
-    try {
-      const res = await fetch(`/api/alerts/${encodeURIComponent(postId)}/review`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ decision }),
-      });
-      if (!res.ok) throw new Error("review request failed");
-      await loadAlerts();
-    } catch (err) {
-      window.alert("Failed to update review status.");
-    }
   }
 
   // -- claim workflow (Alerts tab -> Board tab) --------------------------------
@@ -2257,7 +2267,7 @@
     const detailTr = document.createElement("tr");
     detailTr.className = "alert-detail-row";
     const td = document.createElement("td");
-    td.colSpan = 14;
+    td.colSpan = 13;
     td.appendChild(buildIncidentDetailPanel(alert));
     detailTr.appendChild(td);
     tr.after(detailTr);
@@ -2527,7 +2537,6 @@
       document.getElementById("filter-watching-severity").value = "";
       applyWatchingView();
     } else {
-      document.getElementById("filter-status").value = "";
       document.getElementById("filter-category").value = "";
       document.getElementById("filter-severity").value = "";
       document.getElementById("filter-alerts-platform").value = "";
@@ -2679,6 +2688,45 @@
     }
   }
 
+  async function runClassify() {
+    const button = document.getElementById("run-classify-btn");
+    const status = document.getElementById("classify-status");
+
+    button.disabled = true;
+    status.textContent = "Classifying… (up to a couple minutes for a full batch against the live API)";
+
+    // Same client-side-timeout tradeoff as runCollection() above: a live batch
+    // of Claude calls (rate-limited pacing + real latency) can run longer than
+    // feels responsive to wait on in the browser, but the server keeps working
+    // regardless -- this only stops the browser from waiting on it.
+    const CLASSIFY_CLIENT_TIMEOUT_MS = 45000;
+    const abortController = new AbortController();
+    const timeoutId = setTimeout(() => abortController.abort(), CLASSIFY_CLIENT_TIMEOUT_MS);
+
+    try {
+      const res = await fetch("/api/classify", { method: "POST", signal: abortController.signal });
+      clearTimeout(timeoutId);
+      if (!res.ok) throw new Error("classify request failed");
+      const result = await res.json();
+
+      status.textContent = result.skipped
+        ? "Skipped -- no ANTHROPIC_API_KEY configured."
+        : `Classified ${result.posts_classified} post${result.posts_classified === 1 ? "" : "s"}.`;
+
+      loadAllDashboardData();
+    } catch (err) {
+      clearTimeout(timeoutId);
+      if (err.name === "AbortError") {
+        status.textContent =
+          "Still running on the server after 45s -- it'll finish on its own; refresh the tabs in a bit.";
+      } else {
+        status.textContent = "Classification failed -- check server logs.";
+      }
+    } finally {
+      button.disabled = false;
+    }
+  }
+
   // -- automatic collection schedule (Settings tab, Sources sub-tab) ----------
 
   async function loadScheduleCard() {
@@ -2718,6 +2766,53 @@
         body: JSON.stringify({ enabled: checkbox.checked, interval_seconds: Math.round(hours * 3600) }),
       });
       if (!res.ok) throw new Error("schedule save failed");
+      status.textContent = "Saved -- takes effect within a few seconds, no restart needed.";
+    } catch (err) {
+      status.textContent = "Failed to save the schedule.";
+    } finally {
+      button.disabled = false;
+    }
+  }
+
+  // -- automatic classification schedule (Settings tab, Sources sub-tab) ------
+
+  async function loadClassifyScheduleCard() {
+    const checkbox = document.getElementById("classify-schedule-enabled-checkbox");
+    const intervalInput = document.getElementById("classify-schedule-interval-input");
+    const lastChecked = document.getElementById("classify-schedule-last-checked");
+    try {
+      const schedule = await fetchJSON("/api/classify-schedule");
+      checkbox.checked = schedule.enabled;
+      intervalInput.value = schedule.interval_seconds / 3600;
+      lastChecked.textContent = schedule.last_classified_at
+        ? `Last classified: ${formatDate(schedule.last_classified_at)}`
+        : "Last classified: never yet.";
+    } catch (err) {
+      lastChecked.textContent = "Failed to load the schedule.";
+    }
+  }
+
+  async function saveClassifySchedule() {
+    const button = document.getElementById("save-classify-schedule-btn");
+    const status = document.getElementById("classify-schedule-status");
+    const checkbox = document.getElementById("classify-schedule-enabled-checkbox");
+    const intervalInput = document.getElementById("classify-schedule-interval-input");
+
+    const hours = Number(intervalInput.value);
+    if (!hours || hours <= 0) {
+      status.textContent = "Enter an interval greater than 0.";
+      return;
+    }
+
+    button.disabled = true;
+    status.textContent = "Saving…";
+    try {
+      const res = await fetch("/api/classify-schedule", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ enabled: checkbox.checked, interval_seconds: Math.round(hours * 3600) }),
+      });
+      if (!res.ok) throw new Error("classify schedule save failed");
       status.textContent = "Saved -- takes effect within a few seconds, no restart needed.";
     } catch (err) {
       status.textContent = "Failed to save the schedule.";
@@ -2935,6 +3030,10 @@
     container.textContent = "";
 
     ALL_CATEGORIES.forEach((category) => {
+      // requires_qa has no editor control below (the QA workflow it used to
+      // drive was removed -- Board/COA/incident lifecycle cover that now) but
+      // stays in this object and round-trips through save unchanged: the
+      // backend's CategoryCriteria model still requires the field.
       const criteria = escalationCriteria[category] || {
         requires_qa: false,
         velocity_threshold: null,
@@ -2952,18 +3051,6 @@
       title.className = "escalation-criteria-title";
       title.textContent = formatCategory(category);
       heading.appendChild(title);
-
-      const qaLabel = document.createElement("label");
-      qaLabel.className = "escalation-criteria-qa";
-      const qaCheckbox = document.createElement("input");
-      qaCheckbox.type = "checkbox";
-      qaCheckbox.checked = !!criteria.requires_qa;
-      qaCheckbox.addEventListener("change", () => {
-        escalationCriteria[category] = { ...escalationCriteria[category], requires_qa: qaCheckbox.checked };
-      });
-      qaLabel.appendChild(qaCheckbox);
-      qaLabel.appendChild(document.createTextNode(" Requires human QA"));
-      heading.appendChild(qaLabel);
 
       const thresholdLabel = document.createElement("label");
       thresholdLabel.className = "escalation-criteria-threshold";
@@ -3170,7 +3257,10 @@
   document.getElementById("save-schedule-btn").addEventListener("click", saveSchedule);
   loadScheduleCard();
 
-  document.getElementById("filter-status").addEventListener("change", loadAlerts);
+  document.getElementById("run-classify-btn").addEventListener("click", runClassify);
+  document.getElementById("save-classify-schedule-btn").addEventListener("click", saveClassifySchedule);
+  loadClassifyScheduleCard();
+
   document.getElementById("filter-category").addEventListener("change", loadAlerts);
   document.getElementById("filter-severity").addEventListener("change", loadAlerts);
   document.getElementById("filter-alerts-platform").addEventListener("change", applyAlertsView);

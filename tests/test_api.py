@@ -129,21 +129,6 @@ def test_api_alerts_returns_seeded_alert(client):
     assert body[0]["created_at"]
 
 
-def test_api_alerts_filters_by_status(client):
-    test_client, settings = client
-    conn = get_connection(settings.database_path)
-    init_db(conn)
-    _seed_alert(conn, "t3_pending", qa_status="pending", category="abuse")
-    _seed_alert(conn, "t3_ok", qa_status="not_required")
-    conn.close()
-
-    response = test_client.get("/api/alerts", params={"status": "pending"})
-
-    body = response.json()
-    assert len(body) == 1
-    assert body[0]["post_id"] == "t3_pending"
-
-
 def test_api_alerts_filters_by_category_and_severity(client):
     test_client, settings = client
     conn = get_connection(settings.database_path)
@@ -279,46 +264,6 @@ def test_api_lead_time_includes_sorted_positive_lead_times(client):
     body = response.json()
     # t3_b: 10 min lead time, t3_a: 30 min lead time -- sorted ascending.
     assert body["lead_times_seconds"] == [600.0, 1800.0]
-
-
-def test_api_review_approve_updates_status(client):
-    test_client, settings = client
-    conn = get_connection(settings.database_path)
-    init_db(conn)
-    _seed_alert(conn, "t3_a", qa_status="pending", category="abuse")
-    conn.close()
-
-    response = test_client.post("/api/alerts/t3_a/review", json={"decision": "approved"})
-
-    assert response.status_code == 200
-    assert response.json() == {"post_id": "t3_a", "qa_status": "approved"}
-
-    conn = get_connection(settings.database_path)
-    status = conn.execute("SELECT qa_status FROM alerts WHERE post_id='t3_a'").fetchone()[0]
-    conn.close()
-    assert status == "approved"
-
-
-def test_api_review_404_when_no_pending_alert(client):
-    test_client, settings = client
-    conn = get_connection(settings.database_path)
-    init_db(conn)
-    conn.close()
-
-    response = test_client.post("/api/alerts/nonexistent/review", json={"decision": "approved"})
-
-    assert response.status_code == 404
-
-
-def test_api_review_rejects_invalid_decision(client):
-    test_client, settings = client
-    conn = get_connection(settings.database_path)
-    init_db(conn)
-    conn.close()
-
-    response = test_client.post("/api/alerts/t3_a/review", json={"decision": "maybe"})
-
-    assert response.status_code == 422
 
 
 def test_connect_only_initializes_db_once_per_path(client, monkeypatch):
@@ -496,41 +441,6 @@ def test_api_alerts_includes_incident_and_brief_fields(client):
     assert body["exec_brief_generated_at"] is None
     assert body["incident_report"] is None
     assert body["incident_report_generated_at"] is None
-
-
-def test_api_review_reject_auto_closes_incident_as_false_positive(client):
-    test_client, settings = client
-    conn = get_connection(settings.database_path)
-    init_db(conn)
-    _seed_alert(conn, "t3_a", qa_status="pending", category="abuse")
-    conn.close()
-
-    response = test_client.post("/api/alerts/t3_a/review", json={"decision": "rejected"})
-
-    assert response.status_code == 200
-    conn = get_connection(settings.database_path)
-    incident_status = conn.execute(
-        "SELECT incident_status FROM alerts WHERE post_id='t3_a'"
-    ).fetchone()[0]
-    conn.close()
-    assert incident_status == "false_positive"
-
-
-def test_api_review_approve_does_not_touch_incident_status(client):
-    test_client, settings = client
-    conn = get_connection(settings.database_path)
-    init_db(conn)
-    _seed_alert(conn, "t3_a", qa_status="pending", category="abuse")
-    conn.close()
-
-    test_client.post("/api/alerts/t3_a/review", json={"decision": "approved"})
-
-    conn = get_connection(settings.database_path)
-    incident_status = conn.execute(
-        "SELECT incident_status FROM alerts WHERE post_id='t3_a'"
-    ).fetchone()[0]
-    conn.close()
-    assert incident_status == "open"
 
 
 def test_api_alert_transition_updates_status(settings_factory, monkeypatch):
@@ -1162,8 +1072,16 @@ def test_api_alert_claim_returns_404_for_unknown_post(client):
     assert response.status_code == 404
 
 
-def test_api_get_schedule_returns_defaults_and_last_collected_at(client):
+def test_api_get_schedule_returns_defaults_and_last_collected_at(tmp_path, monkeypatch, client):
     test_client, settings = client
+    # Isolated from config/schedule.yaml's real, dashboard-editable contents
+    # (this project's own Settings tab is meant to let it drift from these
+    # defaults) -- a nonexistent tmp path always falls back to DEFAULT_SCHEDULE,
+    # which is what this test actually checks.
+    yaml_path = tmp_path / "schedule.yaml"
+    monkeypatch.setattr(
+        api_module, "load_schedule_config", lambda: config_module.load_schedule_config(yaml_path)
+    )
     conn = get_connection(settings.database_path)
     init_db(conn)
     conn.execute(
@@ -1211,3 +1129,88 @@ def test_api_put_schedule_persists(tmp_path, monkeypatch, client):
     assert response.json() == {"enabled": True, "interval_seconds": 3600}
     reloaded = config_module.load_schedule_config(yaml_path)
     assert reloaded == {"enabled": True, "interval_seconds": 3600}
+
+
+def test_api_get_classify_schedule_returns_defaults_and_last_classified_at(tmp_path, monkeypatch, client):
+    test_client, settings = client
+    yaml_path = tmp_path / "classify_schedule.yaml"
+    monkeypatch.setattr(
+        api_module, "load_classify_schedule_config", lambda: config_module.load_classify_schedule_config(yaml_path)
+    )
+    conn = get_connection(settings.database_path)
+    init_db(conn)
+    conn.execute(
+        "INSERT INTO classifications (post_id, is_pain_point, category, model_implicated, severity, "
+        "issue_summary, classifier_model, classified_at, is_advertisement) VALUES "
+        "('t3_seed', 1, 'product_bug', 'claude_api_general', 'med', 'test summary', "
+        "'claude-haiku-4-5-20251001', '2024-01-01T00:00:00+00:00', 0)"
+    )
+    conn.commit()
+    conn.close()
+
+    response = test_client.get("/api/classify-schedule")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["enabled"] is False
+    assert body["interval_seconds"] == 7200
+    assert body["last_classified_at"] == "2024-01-01T00:00:00+00:00"
+
+
+def test_api_get_classify_schedule_last_classified_at_null_when_no_data(client):
+    test_client, _settings = client
+
+    response = test_client.get("/api/classify-schedule")
+
+    assert response.status_code == 200
+    assert response.json()["last_classified_at"] is None
+
+
+def test_api_put_classify_schedule_persists(tmp_path, monkeypatch, client):
+    test_client, _settings = client
+    yaml_path = tmp_path / "classify_schedule.yaml"
+    monkeypatch.setattr(
+        api_module, "load_classify_schedule_config", lambda: config_module.load_classify_schedule_config(yaml_path)
+    )
+    monkeypatch.setattr(
+        api_module,
+        "save_classify_schedule_config",
+        lambda updates: config_module.save_classify_schedule_config(updates, path=yaml_path),
+    )
+
+    response = test_client.put("/api/classify-schedule", json={"enabled": True, "interval_seconds": 1800})
+
+    assert response.status_code == 200
+    assert response.json() == {"enabled": True, "interval_seconds": 1800}
+    reloaded = config_module.load_classify_schedule_config(yaml_path)
+    assert reloaded == {"enabled": True, "interval_seconds": 1800}
+
+
+@respx.mock
+def test_api_classify_runs_and_reports_count(client, load_anthropic_fixture):
+    test_client, settings = client
+    conn = get_connection(settings.database_path)
+    init_db(conn)
+    conn.execute(
+        "INSERT INTO snapshots (post_id, platform, poll_run_id, collected_at, created_at, url, "
+        "raw_text, search_pass) VALUES "
+        "('t3_new', 'reddit', 'run-1', '2024-01-01T00:00:00+00:00', '2024-01-01T00:00:00+00:00', "
+        "'https://x/t3_new', 'Getting 529s constantly.', 'top')"
+    )
+    conn.commit()
+    conn.close()
+    respx.post(ANTHROPIC_API_URL).mock(
+        return_value=httpx.Response(200, json=load_anthropic_fixture("classify_pain_point.json"))
+    )
+
+    response = test_client.post("/api/classify")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["skipped"] is False
+    assert body["posts_classified"] == 1
+
+    conn = get_connection(settings.database_path)
+    row = conn.execute("SELECT post_id FROM classifications WHERE post_id = 't3_new'").fetchone()
+    conn.close()
+    assert row is not None

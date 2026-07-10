@@ -15,6 +15,7 @@ DEFAULT_KNOWN_INCIDENTS_PATH = Path("config/known_incidents.yaml")
 DEFAULT_ESCALATION_CRITERIA_PATH = Path("config/escalation_criteria.yaml")
 DEFAULT_MODEL_TIERS_PATH = Path("config/model_tiers.yaml")
 DEFAULT_SCHEDULE_PATH = Path("config/schedule.yaml")
+DEFAULT_CLASSIFY_SCHEDULE_PATH = Path("config/classify_schedule.yaml")
 
 # Applies to each of the terms/clients/risk_patterns lists independently --
 # enforced in the API layer (radar/api.py), not here, so this stays a plain
@@ -139,6 +140,23 @@ _SCHEDULE_HEADER = (
 # first-run lookback fallback in radar/collect.py), but there's no reason to
 # start them out of sync.
 DEFAULT_SCHEDULE: dict[str, Any] = {
+    "enabled": False,
+    "interval_seconds": 7200,
+}
+
+_CLASSIFY_SCHEDULE_HEADER = (
+    "# Automatic classification: whether radar serve's background scheduler\n"
+    "# also runs classify passes (not just collection), and how often. Off by\n"
+    "# default -- unlike collection this calls the paid Anthropic API, so this\n"
+    "# is a separate opt-in from config/schedule.yaml, not folded into it.\n"
+    "# Dashboard-editable (Settings tab) -- see radar/config.py and\n"
+    "# radar/scheduler.py.\n"
+)
+
+# Independent from DEFAULT_SCHEDULE's interval -- collection and classification
+# are separate scheduler ticks (radar/scheduler.py) so they can be tuned apart,
+# e.g. classifying less often than collecting to control API spend.
+DEFAULT_CLASSIFY_SCHEDULE: dict[str, Any] = {
     "enabled": False,
     "interval_seconds": 7200,
 }
@@ -447,6 +465,34 @@ def save_schedule_config(
     path.parent.mkdir(parents=True, exist_ok=True)
     with open(path, "w", encoding="utf-8") as f:
         f.write(_SCHEDULE_HEADER)
+        yaml.safe_dump(current, f, sort_keys=False, default_flow_style=False)
+    return current
+
+
+def load_classify_schedule_config(path: Path = DEFAULT_CLASSIFY_SCHEDULE_PATH) -> dict[str, Any]:
+    """{enabled, interval_seconds} for the classify scheduler -- same
+    read-fresh-every-call, fall-back-to-defaults shape as load_schedule_config().
+    """
+    if path.exists():
+        with open(path, encoding="utf-8") as f:
+            saved = yaml.safe_load(f) or {}
+    else:
+        saved = {}
+    return {**DEFAULT_CLASSIFY_SCHEDULE, **saved}
+
+
+def save_classify_schedule_config(
+    updates: dict[str, Any], path: Path = DEFAULT_CLASSIFY_SCHEDULE_PATH
+) -> dict[str, Any]:
+    """Merges `updates` into the currently-saved classify schedule and writes
+    it back -- same merge-on-save shape as save_schedule_config().
+    """
+    current = load_classify_schedule_config(path)
+    current.update(updates)
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(path, "w", encoding="utf-8") as f:
+        f.write(_CLASSIFY_SCHEDULE_HEADER)
         yaml.safe_dump(current, f, sort_keys=False, default_flow_style=False)
     return current
 

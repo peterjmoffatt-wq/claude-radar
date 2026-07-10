@@ -4,6 +4,7 @@ import pytest
 from pydantic import ValidationError
 
 from radar.config import (
+    DEFAULT_CLASSIFY_SCHEDULE,
     DEFAULT_ESCALATION_CRITERIA,
     DEFAULT_MODEL_TIERS,
     DEFAULT_RISK_PATTERNS,
@@ -14,12 +15,14 @@ from radar.config import (
     client_for_matched_term,
     effective_terms,
     effective_velocity_threshold,
+    load_classify_schedule_config,
     load_escalation_criteria,
     load_known_incidents,
     load_model_tiers,
     load_schedule_config,
     load_search_terms,
     protection_tier_for,
+    save_classify_schedule_config,
     save_escalation_criteria,
     save_model_tiers,
     save_schedule_config,
@@ -304,6 +307,29 @@ def test_save_schedule_config_merges_and_persists(tmp_path):
 
     assert reloaded["enabled"] is True  # earlier save preserved
     assert reloaded["interval_seconds"] == 3600
+
+
+def test_load_classify_schedule_config_returns_defaults_when_file_missing(tmp_path):
+    schedule = load_classify_schedule_config(path=tmp_path / "does_not_exist.yaml")
+    assert schedule == DEFAULT_CLASSIFY_SCHEDULE
+    assert schedule["enabled"] is False
+    assert schedule["interval_seconds"] == 7200
+
+
+def test_save_classify_schedule_config_merges_and_persists(tmp_path):
+    yaml_path = tmp_path / "classify_schedule.yaml"
+
+    save_classify_schedule_config({"enabled": True}, path=yaml_path)
+    reloaded = load_classify_schedule_config(path=yaml_path)
+
+    assert reloaded["enabled"] is True
+    assert reloaded["interval_seconds"] == 7200  # untouched default
+
+    save_classify_schedule_config({"interval_seconds": 1800}, path=yaml_path)
+    reloaded = load_classify_schedule_config(path=yaml_path)
+
+    assert reloaded["enabled"] is True  # earlier save preserved
+    assert reloaded["interval_seconds"] == 1800
 
 
 def test_protection_tier_for():

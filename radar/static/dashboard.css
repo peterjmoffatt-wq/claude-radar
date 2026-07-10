@@ -1030,16 +1030,6 @@ button:hover {
   background: var(--gridline);
 }
 
-button.approve {
-  color: var(--status-good);
-  border-color: var(--status-good);
-}
-
-button.reject {
-  color: var(--status-critical);
-  border-color: var(--status-critical);
-}
-
 a.post-link {
   color: var(--series-1);
   text-decoration: none;

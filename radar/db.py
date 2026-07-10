@@ -439,7 +439,6 @@ def list_pending_alerts(
 
 def get_alerts(
     conn: sqlite3.Connection,
-    status: str | None = None,
     category: str | None = None,
     severity: str | None = None,
     post_id: str | None = None,
@@ -478,9 +477,6 @@ def get_alerts(
         )
     """
     params: list[str] = []
-    if status:
-        query += " AND a.qa_status = ?"
-        params.append(status)
     if category:
         query += " AND a.category = ?"
         params.append(category)
@@ -532,6 +528,10 @@ def get_unscored_pain_points(conn: sqlite3.Connection, post_id: str | None = Non
 
 def resolve_alert(conn: sqlite3.Connection, post_id: str, decision: str) -> bool:
     """Resolve the most recent pending alert for a post to 'approved'/'rejected'.
+    Used by the `radar review` CLI (radar/qa.py) -- the dashboard's own
+    Approve/Reject buttons were retired once the Board/incident lifecycle and
+    Course of Action made them redundant, but this scriptable path still has
+    standalone value and was kept.
 
     Returns whether a row was actually updated (False if no pending alert exists).
     """
@@ -602,6 +602,16 @@ def get_last_collected_at(conn: sqlite3.Connection) -> datetime | None:
     silent gap of posts that were created but never captured.
     """
     row = conn.execute("SELECT MAX(collected_at) FROM snapshots").fetchone()
+    return datetime.fromisoformat(row[0]) if row and row[0] else None
+
+
+def get_last_classified_at(conn: sqlite3.Connection) -> datetime | None:
+    """When the most recent classification run actually happened -- None if
+    nothing has ever been classified. Mirrors get_last_collected_at() above,
+    used the same way: the classify scheduler seeds its "last run" from real
+    history instead of assuming "never run" on every radar serve restart.
+    """
+    row = conn.execute("SELECT MAX(classified_at) FROM classifications").fetchone()
     return datetime.fromisoformat(row[0]) if row and row[0] else None
 
 

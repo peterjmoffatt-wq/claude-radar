@@ -130,18 +130,19 @@
         <thead>
           <tr>
             <th class="sortable-th" data-sort-key="platform">Platform</th>
-            <th>Matched term</th>
+            <th class="sortable-th" data-sort-key="matched_term">Matched term</th>
             <th class="sortable-th" data-sort-key="category">Category</th>
             <th class="sortable-th" data-sort-key="severity">Severity</th>
-            <th>Summary</th>
-            <th>Poster</th>
-            <th>Posted</th>
-            <th>Engagement</th>
+            <th class="sortable-th" data-sort-key="summary">Summary</th>
+            <th class="sortable-th" data-sort-key="poster">Poster</th>
+            <th class="sortable-th" data-sort-key="posted">Posted</th>
+            <th class="num sortable-th" data-sort-key="engagement">Engagement</th>
             <th>Post</th>
+            <th>Actions</th>
           </tr>
         </thead>
         <tbody id="watching-body">
-          <tr><td colspan="9" class="empty-state">Loading…</td></tr>
+          <tr><td colspan="10" class="empty-state">Loading…</td></tr>
         </tbody>
       </table>
     </div>
@@ -149,15 +150,6 @@
 
   <section id="tab-alerts" class="tab-panel" role="tabpanel" data-tab="alerts" hidden>
     <div class="filters">
-      <label>Status
-        <select id="filter-status">
-          <option value="">All</option>
-          <option value="pending">Pending</option>
-          <option value="approved">Approved</option>
-          <option value="rejected">Rejected</option>
-          <option value="not_required">Not required</option>
-        </select>
-      </label>
       <label>Category
         <select id="filter-category">
           <option value="">All</option>
@@ -206,23 +198,22 @@
         <thead>
           <tr>
             <th class="sortable-th" data-sort-key="platform">Platform</th>
-            <th>Matched term</th>
+            <th class="sortable-th" data-sort-key="matched_term">Matched term</th>
             <th class="sortable-th" data-sort-key="category">Category</th>
             <th class="sortable-th" data-sort-key="severity">Severity</th>
             <th class="num sortable-th" data-sort-key="velocity">Velocity</th>
-            <th>QA status</th>
-            <th>Incident</th>
-            <th>Claimed</th>
-            <th>Summary</th>
-            <th>Poster</th>
-            <th>Posted</th>
-            <th>Engagement</th>
+            <th class="sortable-th" data-sort-key="incident">Incident</th>
+            <th class="sortable-th" data-sort-key="claimed">Claimed</th>
+            <th class="sortable-th" data-sort-key="summary">Summary</th>
+            <th class="sortable-th" data-sort-key="poster">Poster</th>
+            <th class="sortable-th" data-sort-key="posted">Posted</th>
+            <th class="num sortable-th" data-sort-key="engagement">Engagement</th>
             <th>Post</th>
             <th>Actions</th>
           </tr>
         </thead>
         <tbody id="alerts-body">
-          <tr><td colspan="14" class="empty-state">Loading…</td></tr>
+          <tr><td colspan="13" class="empty-state">Loading…</td></tr>
         </tbody>
       </table>
     </div>
@@ -291,6 +282,41 @@
           <span id="schedule-status" class="collection-status" role="status"></span>
         </div>
       </div>
+
+      <div class="card source-picker">
+        <h2>Classification</h2>
+        <p class="source-picker-caption">
+          Collected posts sit here until classified -- this is what actually decides if
+          something's a real pain point and puts it on the Watching tab. Unlike collection this
+          calls the paid Anthropic API (<code>CLASSIFIER_MODEL</code>, Haiku by default), so it's
+          a separate, deliberate step rather than something that happens just by polling a source.
+        </p>
+        <div class="source-picker-actions">
+          <button type="button" id="run-classify-btn" class="run-collection">Run classification</button>
+          <span id="classify-status" class="collection-status" role="status"></span>
+        </div>
+      </div>
+
+      <div class="card">
+        <h2>Automatic classification</h2>
+        <p class="source-picker-caption">
+          Runs the same classification pass as the button above, on its own, from inside
+          <code>radar serve</code>. Off by default -- turning this on means unattended, recurring
+          paid API calls on whatever interval you set below, independent of the collection
+          interval above.
+        </p>
+        <label class="schedule-enabled-row">
+          <input type="checkbox" id="classify-schedule-enabled-checkbox" />
+          Automatically classify every
+          <input type="number" id="classify-schedule-interval-input" min="0.25" step="0.25" />
+          hours
+        </label>
+        <p id="classify-schedule-last-checked" class="source-picker-caption"></p>
+        <div class="settings-save-row">
+          <button type="button" id="save-classify-schedule-btn">Save schedule</button>
+          <span id="classify-schedule-status" class="collection-status" role="status"></span>
+        </div>
+      </div>
     </div>
 
     <div class="subtab-panel" data-subtab="watchlist" hidden>
@@ -338,10 +364,10 @@
       <div class="card">
         <h2>Escalation criteria</h2>
         <p class="source-picker-caption">
-          Per-category: whether it requires human QA before an alert is trusted, an optional
-          velocity-threshold override (blank = use the platform/global default), and a
-          first-response playbook. Changes here affect the next <code>radar score</code> run,
-          CLI or dashboard-triggered.
+          Per-category: an optional velocity-threshold override (blank = use the
+          platform/global default), a first-response playbook, and its Board action-item
+          checklist. Changes here affect the next <code>radar score</code> run, CLI or
+          dashboard-triggered.
         </p>
         <div id="escalation-criteria-list"><p class="empty-state">Loading…</p></div>
         <div class="settings-save-row">

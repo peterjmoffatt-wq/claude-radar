@@ -177,9 +177,17 @@ as `ENABLE_HACKERNEWS_SOURCE`), so cloning this repo and running `radar serve` n
 anyone's API until you turn it on. Toggle and interval live in the dashboard's Settings →
 Sources sub-tab, backed by `config/schedule.yaml` (`GET`/`PUT /api/schedule` in `radar/api.py`)
 -- the scheduler thread re-reads that file every 30s, so a dashboard edit takes effect within
-seconds, not on the next multi-hour wakeup or a process restart. It only ever calls
-`run_collection()`, never `radar classify`/`radar score` -- those still call the paid Anthropic
-API and stay deliberate, manual actions (see "Running the classifier" below).
+seconds, not on the next multi-hour wakeup or a process restart.
+
+The same thread runs a second, independent tick for classification (`classify_scheduler_tick()`
+in `radar/scheduler.py`, backed by its own `config/classify_schedule.yaml` and `GET`/`PUT
+/api/classify-schedule`) -- same on/off + interval shape, same Settings → Sources sub-tab, just
+its own card ("Automatic classification") below the collection one, so the two can run on
+different cadences. It's a separate toggle, off by default, because unlike collection this
+calls the paid Anthropic API on a recurring, unattended basis -- collection filling
+`snapshots` doesn't by itself put anything on the Watching tab, since that only shows
+*classified* posts (see "Running the classifier" below), so a deployment that wants the
+dashboard to stay current end-to-end needs both toggles on, not just collection's.
 
 **Tuning the watchlist**: edit `config/search_terms.yaml` directly, or use the dashboard's
 Settings tab (writes to the same file, so `radar collect` picks up dashboard edits too — see
@@ -209,13 +217,20 @@ radar classify
 ```
 
 Reads up to `CLASSIFY_BATCH_LIMIT` (default 100) posts from `snapshots` that don't yet have a
-row in `classifications` (one classification per post, using its most recent snapshot), sends
-each to Claude (`CLASSIFIER_MODEL`) with a forced tool call to get a structured
+row in `classifications` (one classification per post, using its most recent snapshot, oldest
+first), sends each to Claude (`CLASSIFIER_MODEL`) with a forced tool call to get a structured
 `is_pain_point` / `category` / `model_implicated` / `severity` / `issue_summary` result, and
 writes it to the `classifications` table. A single post that fails to classify (API error or
 an unusable response) is logged and skipped without failing the rest of the batch. Unlike
 `radar collect`, **this calls the paid Anthropic API** — run it deliberately, not on a tight
-poll loop.
+poll loop. The same pass is also available as a "Run classification" button on the dashboard's
+Settings → Sources sub-tab (`POST /api/classify`), and optionally on its own schedule via the
+"Automatic classification" toggle described above -- both call the same `run_classification()`,
+just triggered differently. Because the queue is oldest-first, a large backlog (e.g. after
+enabling collection's scheduler for the first time, or classifying for the first time against
+an already-large `snapshots` table) takes multiple batches to fully clear; each batch still
+only costs `CLASSIFY_BATCH_LIMIT` calls, it just takes several runs (manual or scheduled) to
+work through everything queued up.
 
 ## Scoring alerts
 
@@ -247,9 +262,14 @@ radar review reject t3_abc123
 
 This is the concrete form of the "gate before anything could fire an external alert" in a
 local-only tool: `'pending'` alerts (sensitive categories) sit here until a human approves or
-rejects them — via this CLI or the dashboard's own approve/reject buttons (same effect,
-`radar/qa.py` backs both). Rejecting an alert also auto-closes its `incident_status` as
-`false_positive` (see below) — a rejected alert isn't a real incident to keep working.
+rejects them via this CLI (`radar/qa.py`). The dashboard used to offer the same
+approve/reject action as buttons on the Alerts tab, including auto-closing a rejected alert's
+`incident_status` as `false_positive`; both were removed once the Board's incident lifecycle
+made them redundant — dragging a card to the Board's "False positive" column (or `POST
+/api/alerts/{post_id}/transition`) is the dashboard-native way to reach the same state now, and
+qa_status itself no longer surfaces anywhere in the UI. `radar review` is kept as a scriptable,
+CLI-only path with its own standalone value; it only ever updates `qa_status`, not
+`incident_status`.
 
 ## Incident lifecycle, claim workflow, exec briefs, and post-incident reports
 
@@ -347,15 +367,17 @@ A hub or satellite backed by a **flagship-tier** model (see "Escalation criteria
 protection" below) is flagged with a plain-text "Flagship"/"FLAGSHIP" label, not an icon.
 
 **Watching** is the filterable, sortable table of classified pain points that haven't (yet, or
-ever) become a real alert. **Alerts** is the team-wide queue — everything the system (or a
-manual "Send to Alerts") has flagged, whether anyone's working it yet or not. Both share
-Platform/Category/Severity filters (Alerts adds QA status) and click-to-sort columns
-(Platform/Category/Severity/Velocity) with a ▲/▼ indicator. Alerts keeps its inline
-approve/reject actions, an **Incident** status column, a **Claimed** column (a plain-text name
-pill, or "Unclaimed") with **Claim**/**Release** actions, and a **Details** toggle per row that
-expands into the incident lifecycle/brief/report panel described above. Both tables show
-**Matched term** so a client-scoped hit (e.g. `"McDonald's jailbreak"`) is visibly distinct
-from a generic one. Claim identity is a freeform "Claiming as" name persisted in the browser
+ever) become a real alert — every column is click-to-sort (▲/▼ indicator), except **Post**
+(just a link) and **Actions**, whose one action is **Escalate**: the same manual "send to
+Alerts" judgment call the footprint graph's detail panel offers (`POST
+/api/watching/{post_id}/promote`), now reachable straight from the row instead of only via the
+graph. **Alerts** is the team-wide queue — everything the system (or a manual escalation) has
+flagged, whether anyone's working it yet or not — with the same all-columns-sortable treatment
+plus an **Incident** status column, a **Claimed** column (a plain-text name pill, or
+"Unclaimed") with **Claim**/**Release** actions, and a **Details** toggle per row that expands
+into the incident lifecycle/brief/report panel described above. Both tables show **Matched
+term** so a client-scoped hit (e.g. `"McDonald's jailbreak"`) is visibly distinct from a
+generic one. Claim identity is a freeform "Claiming as" name persisted in the browser
 (no login system exists yet — see "Incident lifecycle" above for why that's a deliberate,
 not-yet-built line).
 
@@ -384,7 +406,12 @@ no server round-trip to switch) so each section is reachable without scrolling p
   checked sources on demand. Below it, an **Automatic collection** card: an on/off toggle and
   an interval (in hours) for the background scheduler described under "Running it
   automatically" above, plus a "Last checked" timestamp so it's obvious at a glance whether
-  it's actually running, not just switched on.
+  it's actually running, not just switched on. Below that, the same on-demand/automatic pairing
+  again for the other half of the pipeline: a **Classification** card with a **Run
+  classification** button (`POST /api/classify`), and an **Automatic classification** card with
+  its own on/off toggle, interval, and "Last classified" timestamp (`GET`/`PUT
+  /api/classify-schedule`) — kept as separate cards/toggles from collection's, not folded
+  together, since this is the one that spends paid API budget.
 - **Watchlist** — three editable lists (Search terms, Watched clients, Risk patterns — see
   "Tuning the watchlist" above) with a live "effective query preview" and a single **Save
   watchlist** button that writes to `config/search_terms.yaml` (so CLI runs pick it up too, not
@@ -510,8 +537,41 @@ network access required for any of it.
   app creation itself) that calls `run_collection()` on its own once enabled, on a
   dashboard-editable interval (`config/schedule.yaml`, `GET`/`PUT /api/schedule`). Off by
   default; seeds "last run" from the real `collected_at` history so a restart doesn't
-  immediately re-fire a pass that already happened. Scoped to collection only — classification
-  and scoring stay manual, deliberate actions.
+  immediately re-fire a pass that already happened. Originally scoped to collection only
+  (superseded by the Auto-classify round below).
+- **Sortable-columns round:** every data column on the Watching and Alerts tables (not just
+  the three-to-four that shipped with each table originally) got a click-to-sort header —
+  a small shared `applySort()`/`initSortableHeaders()` pair in `dashboard.js` that any
+  `<th class="sortable-th" data-sort-key="...">` auto-wires into, with the lifecycle column
+  (Incident) sorting by its real stage order rather than alphabetically. `Post` and `Actions`
+  stayed unsortable on purpose — a link and a button row, not data.
+- **Auto-classify round:** collection running on its own turned out to be only half the
+  freshness story — `run_collection()` fills `snapshots`, but the Watching/Alerts tables only
+  show *classified* posts, and classification stayed a manual, deliberate action (paid API).
+  In practice that meant collection could run unattended for days while the dashboard quietly
+  stopped reflecting anything new. `classify_scheduler_tick()` (`radar/scheduler.py`) closes
+  that gap the same way collection's tick does: its own dashboard-editable on/off + interval
+  (`config/classify_schedule.yaml`, `GET`/`PUT /api/classify-schedule`), its own "last run"
+  seeded from real `classified_at` history (`get_last_classified_at()`), off by default and
+  independent of collection's interval so the two can be tuned apart. A `POST /api/classify`
+  endpoint backs a matching manual "Run classification" button for the same on-demand/automatic
+  pairing collection already had.
+- **Escalate round:** the footprint graph's "Send to Alerts" promotion (`POST
+  /api/watching/{post_id}/promote`) was previously only reachable through a graph node's detail
+  panel; the Watching table gained the same action directly on each row (an **Actions** column,
+  **Escalate** button) so escalating a post doesn't require finding it on the graph first. Both
+  entry points call the same `promoteWatchingPostToAlert()` in `dashboard.js`.
+- **QA-buttons-retired round:** the dashboard's inline Approve/Reject actions (and the QA status
+  column, its sort, and the Status filter) were removed from the Alerts tab — once the Board's
+  incident lifecycle and Course of Action existed, `qa_status` had no code path left that gated
+  anything downstream of it (`claim_alert()`/`transition_incident()` were already independent of
+  it; confirmed before removing anything). The one real behavior riding on the reject button —
+  auto-closing an alert's `incident_status` as `false_positive` — is already a first-class Board
+  drag target (`false_positive` has always been one of `IncidentStatus`'s values), so nothing
+  was lost, just a redundant second path to the same state. `qa_status` itself, `category_requires_qa()`,
+  and the `radar review` CLI (`radar/qa.py`) were kept as-is — the CLI is a separate, scriptable
+  surface this round didn't touch, and the column still exists (`NOT NULL`) so alerts still need
+  a value written at creation time even though nothing displays it anymore.
 
 ## Data model
 
@@ -564,6 +624,8 @@ radar/
 │   └── x.py                              # XSource (feature-flagged, inert without a paid token)
 ├── collect.py                             # orchestration across all configured sources: `radar collect`
 ├── classify.py                     # ClaudeClassifier + orchestration: `radar classify`
+├── scheduler.py                      # background thread `radar serve` starts: calls run_collection()/
+│                                      # run_classification() on their own dashboard-editable intervals
 ├── brief.py                          # exec-brief / post-incident-report generation (same Claude-call shape as classify.py)
 ├── score.py                         # velocity scoring + alert suppression: `radar score`
 ├── qa.py                              # human QA gate: `radar review`
