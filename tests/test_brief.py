@@ -4,7 +4,7 @@ import httpx
 import pytest
 import respx
 
-from radar.brief import BriefFacts, generate_exec_brief, generate_incident_report
+from radar.brief import BriefFacts, generate_coa, generate_exec_brief, generate_incident_report
 from radar.classify import API_URL
 
 
@@ -118,8 +118,8 @@ def test_generate_incident_report_includes_claude_narrative_and_facts(
     )
     settings = settings_factory()
     timeline = [
-        ("open", "acknowledged", None, "2024-01-01T00:00:00+00:00"),
-        ("acknowledged", "resolved", "Fixed upstream", "2024-01-01T02:00:00+00:00"),
+        ("open", "acknowledged", None, None, "2024-01-01T00:00:00+00:00"),
+        ("acknowledged", "resolved", "Fixed upstream", None, "2024-01-01T02:00:00+00:00"),
     ]
 
     report = generate_incident_report(
@@ -133,6 +133,32 @@ def test_generate_incident_report_includes_claude_narrative_and_facts(
     assert "open → acknowledged" in report
     assert "Fixed upstream" in report
     assert "## What should change\n\nAdd a regression test." in report
+
+
+def test_template_brief_mentions_flagship_tier(settings_factory):
+    settings = settings_factory(anthropic_api_key="")
+
+    brief = generate_exec_brief(settings, _facts(protection_tier="flagship"), sleep_fn=lambda s: None)
+
+    assert "FLAGSHIP-tier model" in brief
+
+
+def test_template_brief_omits_tier_mention_when_standard(settings_factory):
+    settings = settings_factory(anthropic_api_key="")
+
+    brief = generate_exec_brief(settings, _facts(protection_tier="standard"), sleep_fn=lambda s: None)
+
+    assert "FLAGSHIP" not in brief
+
+
+def test_incident_report_template_facts_mention_flagship_tier(settings_factory):
+    settings = settings_factory(anthropic_api_key="")
+
+    report = generate_incident_report(
+        settings, _facts(protection_tier="flagship"), [], "note", sleep_fn=lambda s: None
+    )
+
+    assert "Model protection tier: **flagship**" in report
 
 
 @respx.mock
@@ -153,3 +179,76 @@ def test_format_timeline_markdown_empty_case(timeline, settings_factory):
     settings = settings_factory(anthropic_api_key="")
     report = generate_incident_report(settings, _facts(), timeline, "note", sleep_fn=lambda s: None)
     assert "_No status transitions recorded._" in report
+
+
+def test_format_timeline_markdown_shows_coa_when_present():
+    from radar.brief import _format_timeline_markdown
+
+    timeline = [("open", "acknowledged", None, "Escalate to security.", "2024-01-01T00:00:00+00:00")]
+    markdown = _format_timeline_markdown(timeline)
+
+    assert "Recommended: Escalate to security." in markdown
+
+
+@respx.mock
+def test_generate_coa_returns_claude_text(settings_factory, load_anthropic_fixture):
+    respx.post(API_URL).mock(
+        return_value=httpx.Response(200, json=load_anthropic_fixture("brief_text_response.json"))
+    )
+    settings = settings_factory()
+
+    coa = generate_coa(
+        settings, _facts(), "Escalate to security immediately.", "acknowledged", sleep_fn=lambda s: None
+    )
+
+    assert "Recommend eng triage" in coa
+
+
+def test_generate_coa_falls_back_to_playbook_template_on_api_error(settings_factory):
+    settings = settings_factory(anthropic_api_key="")
+
+    coa = generate_coa(
+        settings, _facts(), "Escalate to security immediately.", "acknowledged", sleep_fn=lambda s: None
+    )
+
+    assert coa == "Escalate to security immediately."
+
+
+def test_generate_coa_template_mentions_client_when_present(settings_factory):
+    settings = settings_factory(anthropic_api_key="")
+
+    coa = generate_coa(
+        settings,
+        _facts(client="McDonald's"),
+        "Escalate to security immediately.",
+        "acknowledged",
+        sleep_fn=lambda s: None,
+    )
+
+    assert "Escalate to security immediately." in coa
+    assert "McDonald's" in coa
+    assert "account team" in coa
+
+
+def test_generate_coa_template_falls_back_to_generic_when_no_playbook(settings_factory):
+    settings = settings_factory(anthropic_api_key="")
+
+    coa = generate_coa(settings, _facts(category="other"), "", "acknowledged", sleep_fn=lambda s: None)
+
+    assert "Triage this other alert manually." in coa
+
+
+@respx.mock
+def test_generate_coa_sends_no_tool_use(settings_factory, load_anthropic_fixture):
+    route = respx.post(API_URL).mock(
+        return_value=httpx.Response(200, json=load_anthropic_fixture("brief_text_response.json"))
+    )
+    settings = settings_factory()
+
+    generate_coa(settings, _facts(), "playbook text", "acknowledged", sleep_fn=lambda s: None)
+
+    import json
+
+    body = json.loads(route.calls.last.request.content)
+    assert "tools" not in body
+    assert "tool_choice" not in body

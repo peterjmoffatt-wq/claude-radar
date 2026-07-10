@@ -231,6 +231,13 @@
         label.appendChild(document.createTextNode(" "));
         label.appendChild(recurring);
       }
+      if (c.protection_tier === "flagship") {
+        const flagship = document.createElement("span");
+        flagship.className = "flagship-tag";
+        flagship.textContent = "flagship";
+        label.appendChild(document.createTextNode(" "));
+        label.appendChild(flagship);
+      }
 
       const value = document.createElement("div");
       value.className = "bar-value";
@@ -255,6 +262,9 @@
         ];
         if (c.episode_count > 1) {
           lines.push(["Recurred", `${c.episode_count} times since ${formatDate(c.first_triggered_at)}`]);
+        }
+        if (c.protection_tier === "flagship") {
+          lines.push(["Protection tier", "Flagship"]);
         }
         lines.push(["Example", c.representative_issue_summary]);
         showTooltipForElement(hit, lines);
@@ -498,6 +508,7 @@
   // null = show everything; a Set means "only these are visible."
   let footprintPlatformFilter = null;
   let footprintCategoryFilter = null;
+  let footprintClientFilter = null;
 
   const ALL_CATEGORIES = [
     "api_abuse",
@@ -508,6 +519,18 @@
     "abuse",
     "safety",
     "other",
+  ];
+
+  const ALL_MODELS = [
+    "claude_opus",
+    "claude_sonnet",
+    "claude_haiku",
+    "claude_fable",
+    "claude_api_general",
+    "claude_code",
+    "other_llm",
+    "not_applicable",
+    "unknown",
   ];
 
   async function loadFootprintGraph() {
@@ -528,6 +551,7 @@
       ];
       renderFootprintPlatformFilter();
       renderFootprintCategoryFilter();
+      renderFootprintClientFilter();
       applyFootprintFilters();
     } catch (err) {
       renderEmpty(container, "Failed to load the footprint graph.");
@@ -576,6 +600,57 @@
         evt.preventDefault();
         footprintCategoryFilter = new Set([cat]);
         renderFootprintCategoryFilter();
+        applyFootprintFilters();
+      });
+      container.appendChild(chip);
+    });
+  }
+
+  // A program manager watching a handful of enterprise clients wants to cut
+  // straight to that client's posts, ignoring generic noise -- same chip
+  // mechanism as the category filter above. Hidden entirely (not just empty)
+  // when nothing in the current data is client-scoped, since most configs
+  // won't have any watched clients set up.
+  function renderFootprintClientFilter() {
+    const container = document.getElementById("footprint-client-filter");
+    container.textContent = "";
+    const clientsPresent = Array.from(
+      new Set(footprintAllMembers.map((m) => m.client).filter(Boolean))
+    ).sort();
+    container.hidden = clientsPresent.length === 0;
+    if (!clientsPresent.length) return;
+
+    const label = document.createElement("span");
+    label.className = "legend-group-label";
+    label.textContent = "Client:";
+    container.appendChild(label);
+    clientsPresent.forEach((clientName) => {
+      const chip = document.createElement("button");
+      chip.type = "button";
+      chip.className = "category-filter-chip";
+      const isActive = !footprintClientFilter || footprintClientFilter.has(clientName);
+      chip.classList.toggle("is-active", isActive);
+      chip.textContent = clientName;
+      chip.addEventListener("click", () => {
+        if (!footprintClientFilter) {
+          footprintClientFilter = new Set(clientsPresent);
+        }
+        if (footprintClientFilter.has(clientName)) {
+          footprintClientFilter.delete(clientName);
+        } else {
+          footprintClientFilter.add(clientName);
+        }
+        if (footprintClientFilter.size === clientsPresent.length) {
+          footprintClientFilter = null;
+        }
+        renderFootprintClientFilter();
+        applyFootprintFilters();
+      });
+      chip.title = `Isolate ${clientName}: double-click`;
+      chip.addEventListener("dblclick", (evt) => {
+        evt.preventDefault();
+        footprintClientFilter = new Set([clientName]);
+        renderFootprintClientFilter();
         applyFootprintFilters();
       });
       container.appendChild(chip);
@@ -660,6 +735,7 @@
     const filtered = footprintAllMembers.filter((m) => {
       if (footprintPlatformFilter && !footprintPlatformFilter.has(m.platform)) return false;
       if (footprintCategoryFilter && !footprintCategoryFilter.has(m.category)) return false;
+      if (footprintClientFilter && !footprintClientFilter.has(m.client)) return false;
       return true;
     });
     renderFootprintGraph(container, legend, filtered);
@@ -704,6 +780,7 @@
         platformCount: new Set(cluster.members.map((m) => m.platform)).size,
         memberCount: cluster.members.length,
         alertCount: cluster.members.filter((m) => m.status === "alert").length,
+        protectionTier: (clusterSummaries.find((c) => c.cluster_key === cluster.key) || {}).protection_tier,
         r: 22,
         x: width / 2 + Math.cos(angle) * (width * 0.28),
         y: height / 2 + Math.sin(angle) * (height * 0.28),
@@ -830,6 +907,9 @@
             ? `⚠ ${n.alertCount} active alert${n.alertCount === 1 ? "" : "s"}`
             : "No active alerts yet"
         );
+        if (n.protectionTier === "flagship") {
+          addRow("Protection tier", "Flagship");
+        }
         if (clusterSummary && clusterSummary.episode_count > 1) {
           addRow(
             "Recurred",
@@ -851,6 +931,7 @@
         }
         addRow("Category", formatCategory(m.category));
         addRow("Matched term", m.matched_term);
+        addRow("Client", m.client);
         addRow("Poster", truncateForDisplay(m.author, 32), m.author);
         addRow("Posted", formatDate(m.created_at));
         addRow("Engagement", formatEngagement(m));
@@ -1560,6 +1641,7 @@
     let rows = platform ? alertsAllRows.filter((a) => a.platform === platform) : alertsAllRows;
     rows = applySort(rows, alertsSort, ALERTS_SORT_ACCESSORS);
     renderAlerts(tbody, rows);
+    renderAlertsBoard(document.getElementById("alerts-board"), rows);
   }
 
   async function loadAlerts() {
@@ -1968,6 +2050,155 @@
     } else {
       openAlertDetail(tr, alert, detailsBtn);
     }
+  }
+
+  // -- Kanban board (Alerts tab) ------------------------------------------------
+  // Columns are the same incident_status values the table's Details row
+  // already transitions through -- the board is just a second way to
+  // trigger the same transitionIncident() call, via drag-and-drop instead of
+  // a button click.
+
+  const BOARD_COLUMNS = ["open", "acknowledged", "mitigating", "resolved", "false_positive"];
+
+  function openAlertCardModal(alert) {
+    const modal = document.getElementById("alert-card-modal");
+    const body = document.getElementById("alert-card-modal-body");
+    body.textContent = "";
+    body.appendChild(buildIncidentDetailPanel(alert));
+    modal.hidden = false;
+  }
+
+  function closeAlertCardModal() {
+    document.getElementById("alert-card-modal").hidden = true;
+  }
+
+  function renderAlertCard(alert) {
+    const card = document.createElement("div");
+    card.className = "board-card";
+    card.draggable = true;
+    card.dataset.postId = alert.post_id;
+    card.tabIndex = 0;
+
+    const badges = document.createElement("div");
+    badges.className = "board-card-badges";
+    badges.appendChild(badge(SEVERITY_META[alert.severity] || { dot: "muted", label: alert.severity }));
+    const platformSpan = document.createElement("span");
+    platformSpan.className = "board-card-platform";
+    platformSpan.textContent = PLATFORM_LABEL[alert.platform] || alert.platform;
+    badges.appendChild(platformSpan);
+    card.appendChild(badges);
+
+    const category = document.createElement("div");
+    category.className = "board-card-category";
+    category.textContent = formatCategory(alert.category);
+    if (alert.client) category.textContent += ` · ${alert.client}`;
+    card.appendChild(category);
+
+    const summary = document.createElement("p");
+    summary.className = "board-card-summary";
+    summary.textContent = alert.issue_summary;
+    card.appendChild(summary);
+
+    const coaBox = document.createElement("p");
+    coaBox.className = "board-card-coa";
+    coaBox.textContent = alert.coa || "";
+    card.appendChild(coaBox);
+
+    const openBtn = document.createElement("button");
+    openBtn.type = "button";
+    openBtn.className = "detail-jump-link";
+    openBtn.textContent = "View details →";
+    openBtn.addEventListener("click", (evt) => {
+      evt.stopPropagation();
+      openAlertCardModal(alert);
+    });
+    card.appendChild(openBtn);
+
+    card.addEventListener("click", () => openAlertCardModal(alert));
+    card.addEventListener("keydown", (evt) => {
+      if (evt.key === "Enter" || evt.key === " ") {
+        evt.preventDefault();
+        openAlertCardModal(alert);
+      }
+    });
+    card.addEventListener("dragstart", (evt) => {
+      evt.dataTransfer.setData("text/plain", alert.post_id);
+      evt.dataTransfer.effectAllowed = "move";
+      card.classList.add("is-dragging");
+    });
+    card.addEventListener("dragend", () => card.classList.remove("is-dragging"));
+
+    return card;
+  }
+
+  async function handleBoardDrop(postId, newStatus) {
+    const card = document.querySelector(`.board-card[data-post-id="${CSS.escape(postId)}"]`);
+    if (card) {
+      card.classList.add("board-card--moving");
+      const coaBox = card.querySelector(".board-card-coa");
+      if (coaBox) coaBox.textContent = "Generating recommended action…";
+    }
+    await transitionIncident(postId, newStatus);
+  }
+
+  function renderAlertsBoard(container, alerts) {
+    container.textContent = "";
+    container.className = "board";
+
+    BOARD_COLUMNS.forEach((status) => {
+      const column = document.createElement("div");
+      column.className = "board-column" + (status === "false_positive" ? " board-column--muted" : "");
+      column.dataset.status = status;
+
+      const columnAlerts = alerts.filter((a) => (a.incident_status || "open") === status);
+
+      const header = document.createElement("div");
+      header.className = "board-column-header";
+      const meta = INCIDENT_META[status] || { label: status };
+      header.textContent = `${meta.label} (${columnAlerts.length})`;
+      column.appendChild(header);
+
+      const cardsContainer = document.createElement("div");
+      cardsContainer.className = "board-column-cards";
+      columnAlerts.forEach((alert) => cardsContainer.appendChild(renderAlertCard(alert)));
+      column.appendChild(cardsContainer);
+
+      column.addEventListener("dragover", (evt) => {
+        evt.preventDefault();
+        evt.dataTransfer.dropEffect = "move";
+        column.classList.add("is-drag-over");
+      });
+      column.addEventListener("dragleave", () => column.classList.remove("is-drag-over"));
+      column.addEventListener("drop", (evt) => {
+        evt.preventDefault();
+        column.classList.remove("is-drag-over");
+        const postId = evt.dataTransfer.getData("text/plain");
+        const dragged = alerts.find((a) => a.post_id === postId);
+        if (!postId || !dragged || (dragged.incident_status || "open") === status) return;
+        handleBoardDrop(postId, status);
+      });
+
+      container.appendChild(column);
+    });
+  }
+
+  function initAlertsViewToggle() {
+    const buttons = document.querySelectorAll(".view-toggle-btn");
+    buttons.forEach((btn) => {
+      btn.addEventListener("click", () => {
+        buttons.forEach((b) => {
+          const active = b === btn;
+          b.classList.toggle("is-active", active);
+          b.setAttribute("aria-selected", String(active));
+        });
+        document.getElementById("alerts-table-view").hidden = btn.dataset.view !== "table";
+        document.getElementById("alerts-board-view").hidden = btn.dataset.view !== "board";
+      });
+    });
+    document.getElementById("alert-card-modal-close").addEventListener("click", closeAlertCardModal);
+    document.getElementById("alert-card-modal").addEventListener("click", (evt) => {
+      if (evt.target.id === "alert-card-modal") closeAlertCardModal();
+    });
   }
 
   // -- tabs -------------------------------------------------------------------
@@ -2454,14 +2685,125 @@
     }
   }
 
+  // -- model protection tiers (Settings tab) -----------------------------------
+
+  const PROTECTION_TIER_OPTIONS = [
+    { value: "flagship", label: "Flagship" },
+    { value: "standard", label: "Standard" },
+    { value: "legacy", label: "Legacy" },
+  ];
+
+  let modelTiers = {};
+
+  async function initModelTiersTab() {
+    const container = document.getElementById("model-tiers-list");
+    try {
+      const data = await fetchJSON("/api/model-tiers");
+      modelTiers = data.models;
+      renderModelTiersEditor();
+    } catch (err) {
+      container.textContent = "";
+      const p = document.createElement("p");
+      p.className = "empty-state";
+      p.textContent = "Failed to load model protection tiers.";
+      container.appendChild(p);
+    }
+  }
+
+  function renderModelTiersEditor() {
+    const container = document.getElementById("model-tiers-list");
+    container.textContent = "";
+
+    ALL_MODELS.forEach((model) => {
+      const tier = modelTiers[model] || { protection_tier: "standard", velocity_threshold: null };
+
+      const row = document.createElement("div");
+      row.className = "escalation-criteria-row";
+
+      const heading = document.createElement("div");
+      heading.className = "escalation-criteria-heading";
+
+      const title = document.createElement("span");
+      title.className = "escalation-criteria-title";
+      title.textContent = formatCategory(model);
+      heading.appendChild(title);
+
+      const tierLabel = document.createElement("label");
+      tierLabel.className = "escalation-criteria-qa";
+      tierLabel.appendChild(document.createTextNode("Protection tier "));
+      const tierSelect = document.createElement("select");
+      PROTECTION_TIER_OPTIONS.forEach(({ value, label }) => {
+        const option = document.createElement("option");
+        option.value = value;
+        option.textContent = label;
+        option.selected = tier.protection_tier === value;
+        tierSelect.appendChild(option);
+      });
+      tierSelect.addEventListener("change", () => {
+        modelTiers[model] = { ...modelTiers[model], protection_tier: tierSelect.value };
+      });
+      tierLabel.appendChild(tierSelect);
+      heading.appendChild(tierLabel);
+
+      const thresholdLabel = document.createElement("label");
+      thresholdLabel.className = "escalation-criteria-threshold";
+      thresholdLabel.appendChild(document.createTextNode("Velocity override"));
+      const thresholdInput = document.createElement("input");
+      thresholdInput.type = "number";
+      thresholdInput.step = "any";
+      thresholdInput.placeholder = "default";
+      if (tier.velocity_threshold !== null && tier.velocity_threshold !== undefined) {
+        thresholdInput.value = tier.velocity_threshold;
+      }
+      thresholdInput.addEventListener("input", () => {
+        const value = thresholdInput.value.trim();
+        modelTiers[model] = {
+          ...modelTiers[model],
+          velocity_threshold: value === "" ? null : Number(value),
+        };
+      });
+      thresholdLabel.appendChild(thresholdInput);
+      heading.appendChild(thresholdLabel);
+      row.appendChild(heading);
+
+      container.appendChild(row);
+    });
+  }
+
+  async function saveModelTiers() {
+    const button = document.getElementById("save-model-tiers-btn");
+    const status = document.getElementById("model-tiers-status");
+    button.disabled = true;
+    status.textContent = "Saving…";
+    try {
+      const res = await fetch("/api/model-tiers", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ models: modelTiers }),
+      });
+      if (!res.ok) throw new Error("save failed");
+      const data = await res.json();
+      modelTiers = data.models;
+      renderModelTiersEditor();
+      status.textContent = "Saved -- radar score (CLI or dashboard) will use this too.";
+    } catch (err) {
+      status.textContent = "Failed to save -- check server logs.";
+    } finally {
+      button.disabled = false;
+    }
+  }
+
   // -- init -------------------------------------------------------------------
 
   initTabs();
   initSourcePicker();
   initSettingsTab();
   initEscalationCriteriaTab();
+  initModelTiersTab();
+  initAlertsViewToggle();
   document.getElementById("save-watchlist-btn").addEventListener("click", saveWatchlist);
   document.getElementById("save-escalation-criteria-btn").addEventListener("click", saveEscalationCriteria);
+  document.getElementById("save-model-tiers-btn").addEventListener("click", saveModelTiers);
   document.getElementById("run-collection-btn").addEventListener("click", runCollection);
 
   document.getElementById("filter-status").addEventListener("change", loadAlerts);

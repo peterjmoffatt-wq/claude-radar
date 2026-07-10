@@ -8,16 +8,20 @@ from fastapi import FastAPI, HTTPException
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from radar.brief import BriefFacts, generate_exec_brief, generate_incident_report
+from radar.brief import BriefFacts, generate_coa, generate_exec_brief, generate_incident_report
 from radar.cluster import ClusterSummary, get_clusters
 from radar.collect import run_collection, source_availability
 from radar.config import (
     MAX_WATCHLIST_ITEMS,
+    client_for_matched_term,
     effective_terms,
     get_settings,
     load_escalation_criteria,
+    load_model_tiers,
     load_search_terms,
+    protection_tier_for,
     save_escalation_criteria,
+    save_model_tiers,
     save_search_terms,
 )
 from radar.db import (
@@ -30,6 +34,7 @@ from radar.db import (
     init_db,
     resolve_alert,
     save_cluster_brief,
+    save_coa,
     save_exec_brief,
     save_incident_report,
     transition_incident,
@@ -83,11 +88,13 @@ def _alert_dict(row: tuple) -> dict:
         "exec_brief_generated_at",
         "incident_report",
         "incident_report_generated_at",
+        "coa",
+        "coa_generated_at",
     )
     return dict(zip(keys, row))
 
 
-def _facts_from_alert(alert: dict) -> BriefFacts:
+def _facts_from_alert(alert: dict, model_tiers: dict) -> BriefFacts:
     return BriefFacts(
         subject=f"{alert['platform']} alert",
         category=alert["category"],
@@ -96,6 +103,8 @@ def _facts_from_alert(alert: dict) -> BriefFacts:
         platforms=[alert["platform"]],
         velocity=alert["velocity"],
         matched_term=alert.get("matched_term"),
+        protection_tier=protection_tier_for(model_tiers, alert["model_implicated"]),
+        client=alert.get("client"),
     )
 
 
@@ -109,6 +118,7 @@ def _facts_from_cluster(cluster: ClusterSummary) -> BriefFacts:
         platforms=cluster.platforms,
         member_count=cluster.alert_count,
         episode_count=cluster.episode_count,
+        protection_tier=cluster.protection_tier,
     )
 
 
@@ -119,9 +129,13 @@ def api_alerts(
     conn = _connect()
     try:
         rows = get_alerts(conn, status=status, category=category, severity=severity)
+        search_config = load_search_terms()
     finally:
         conn.close()
-    return [_alert_dict(row) for row in rows]
+    dicts = [_alert_dict(row) for row in rows]
+    for d in dicts:
+        d["client"] = client_for_matched_term(d.get("matched_term"), search_config)
+    return dicts
 
 
 @app.get("/api/clusters")
@@ -129,7 +143,10 @@ def api_clusters() -> list[dict]:
     conn = _connect()
     try:
         settings = get_settings()
-        clusters = get_clusters(conn, recurrence_gap_hours=settings.recurrence_gap_hours)
+        model_tiers = load_model_tiers()
+        clusters = get_clusters(
+            conn, recurrence_gap_hours=settings.recurrence_gap_hours, model_tiers=model_tiers
+        )
         result = []
         for c in clusters:
             d = c.__dict__.copy()
@@ -148,6 +165,7 @@ def api_watching() -> list[dict]:
     conn = _connect()
     try:
         rows = get_unscored_pain_points(conn)
+        search_config = load_search_terms()
     finally:
         conn.close()
     keys = (
@@ -166,7 +184,10 @@ def api_watching() -> list[dict]:
         "shares",
         "created_at",
     )
-    return [dict(zip(keys, row)) for row in rows]
+    dicts = [dict(zip(keys, row)) for row in rows]
+    for d in dicts:
+        d["client"] = client_for_matched_term(d.get("matched_term"), search_config)
+    return dicts
 
 
 @app.get("/api/lead-time")
@@ -311,19 +332,39 @@ class IncidentTransition(BaseModel):
     note: str | None = None
 
 
+# Landing in one of these columns is a real decision point worth a
+# recommendation; "open" has nothing to recommend yet (nothing's happened),
+# and "false_positive" has nothing left to act on (dismissed).
+_COA_ELIGIBLE_STATUSES = {"acknowledged", "mitigating", "resolved"}
+
+
 @app.post("/api/alerts/{post_id}/transition")
 def api_alert_transition(post_id: str, body: IncidentTransition) -> dict:
-    """Moves an alert through its incident lifecycle -- independent of
-    qa_status (see transition_incident()'s docstring).
+    """Moves an alert through its incident lifecycle (the Kanban board's drag
+    target) -- independent of qa_status (see transition_incident()'s
+    docstring). Landing in an actionable column auto-generates a Course of
+    Action, grounded in that category's escalation-criteria playbook.
     """
     conn = _connect()
     try:
-        changed = transition_incident(conn, post_id, body.status, note=body.note)
+        alert = _get_one_alert(conn, post_id)
+
+        coa = None
+        if body.status in _COA_ELIGIBLE_STATUSES:
+            settings = get_settings()
+            criteria = load_escalation_criteria()
+            playbook = criteria.get(alert["category"], {}).get("response_template", "")
+            facts = _facts_from_alert(alert, load_model_tiers())
+            coa = generate_coa(settings, facts, playbook, body.status)
+
+        changed = transition_incident(conn, post_id, body.status, note=body.note, coa=coa)
+        if changed and coa:
+            save_coa(conn, post_id, coa)
     finally:
         conn.close()
     if not changed:
         raise HTTPException(status_code=404, detail=f"No alert found for {post_id}")
-    return {"post_id": post_id, "incident_status": body.status}
+    return {"post_id": post_id, "incident_status": body.status, "coa": coa}
 
 
 @app.get("/api/alerts/{post_id}/timeline")
@@ -334,8 +375,14 @@ def api_alert_timeline(post_id: str) -> list[dict]:
     finally:
         conn.close()
     return [
-        {"from_status": from_status, "to_status": to_status, "note": note, "created_at": created_at}
-        for from_status, to_status, note, created_at in events
+        {
+            "from_status": from_status,
+            "to_status": to_status,
+            "note": note,
+            "coa": coa,
+            "created_at": created_at,
+        }
+        for from_status, to_status, note, coa, created_at in events
     ]
 
 
@@ -343,7 +390,9 @@ def _get_one_alert(conn, post_id: str) -> dict:
     rows = get_alerts(conn, post_id=post_id)
     if not rows:
         raise HTTPException(status_code=404, detail=f"No alert found for {post_id}")
-    return _alert_dict(rows[0])
+    alert = _alert_dict(rows[0])
+    alert["client"] = client_for_matched_term(alert.get("matched_term"), load_search_terms())
+    return alert
 
 
 @app.post("/api/alerts/{post_id}/brief")
@@ -354,7 +403,7 @@ def api_alert_brief(post_id: str) -> dict:
     conn = _connect()
     try:
         alert = _get_one_alert(conn, post_id)
-        brief = generate_exec_brief(get_settings(), _facts_from_alert(alert))
+        brief = generate_exec_brief(get_settings(), _facts_from_alert(alert, load_model_tiers()))
         save_exec_brief(conn, post_id, brief)
     finally:
         conn.close()
@@ -366,7 +415,9 @@ def api_cluster_brief(cluster_key: str) -> dict:
     conn = _connect()
     try:
         settings = get_settings()
-        clusters = get_clusters(conn, recurrence_gap_hours=settings.recurrence_gap_hours)
+        clusters = get_clusters(
+            conn, recurrence_gap_hours=settings.recurrence_gap_hours, model_tiers=load_model_tiers()
+        )
         cluster = next((c for c in clusters if c.cluster_key == cluster_key), None)
         if cluster is None:
             raise HTTPException(status_code=404, detail=f"No cluster found for {cluster_key}")
@@ -388,7 +439,7 @@ def api_alert_report(post_id: str, body: IncidentReportRequest) -> dict:
         alert = _get_one_alert(conn, post_id)
         timeline = get_incident_timeline(conn, post_id)
         report_markdown = generate_incident_report(
-            get_settings(), _facts_from_alert(alert), timeline, body.closing_note
+            get_settings(), _facts_from_alert(alert, load_model_tiers()), timeline, body.closing_note
         )
         save_incident_report(conn, post_id, report_markdown)
     finally:
@@ -420,6 +471,31 @@ def api_update_escalation_criteria(body: EscalationCriteriaUpdate) -> dict:
     updates = {category: fields.model_dump() for category, fields in body.categories.items()}
     updated = save_escalation_criteria(updates)
     return {"categories": updated}
+
+
+class ModelTierCriteria(BaseModel):
+    protection_tier: Literal["flagship", "standard", "legacy"]
+    velocity_threshold: float | None
+
+
+class ModelTiersUpdate(BaseModel):
+    models: dict[str, ModelTierCriteria]
+
+
+@app.get("/api/model-tiers")
+def api_get_model_tiers() -> dict:
+    return {"models": load_model_tiers()}
+
+
+@app.put("/api/model-tiers")
+def api_update_model_tiers(body: ModelTiersUpdate) -> dict:
+    """Persists per-model protection tier/velocity override to
+    config/model_tiers.yaml -- also changes what `radar score` uses, not just
+    dashboard views.
+    """
+    updates = {model: fields.model_dump() for model, fields in body.models.items()}
+    updated = save_model_tiers(updates)
+    return {"models": updated}
 
 
 # Mounted last so the /api/* routes above take precedence over this catch-all.

@@ -15,6 +15,7 @@ logger = logging.getLogger("radar.brief")
 
 MAX_BRIEF_TOKENS = 200
 MAX_REPORT_NARRATIVE_TOKENS = 400
+MAX_COA_TOKENS = 150
 
 
 class BriefGenerationError(RuntimeError):
@@ -41,6 +42,8 @@ class BriefFacts:
     velocity: float | None = None
     matched_term: str | None = None
     episode_count: int | None = None
+    protection_tier: str | None = None
+    client: str | None = None
 
 
 def _call_claude(
@@ -102,6 +105,11 @@ def _build_brief_prompt(facts: BriefFacts) -> str:
         lines.append(f"Matched search term: {facts.matched_term}")
     if facts.episode_count and facts.episode_count > 1:
         lines.append(f"This root cause has recurred {facts.episode_count} separate times.")
+    if facts.protection_tier == "flagship":
+        lines.append(
+            "This involves a FLAGSHIP-tier model -- treat as higher business/reputational "
+            "impact than the same issue on a smaller model would carry."
+        )
     lines.append(f"Representative summary: {facts.issue_summary}")
     return "\n".join(lines)
 
@@ -116,6 +124,8 @@ def _template_brief(facts: BriefFacts) -> str:
         parts.append(f"platform={facts.platforms[0]}")
     if facts.episode_count and facts.episode_count > 1:
         parts.append(f"recurred {facts.episode_count} times")
+    if facts.protection_tier == "flagship":
+        parts.append("FLAGSHIP-tier model")
     return ". ".join(parts) + f". {facts.issue_summary}"
 
 
@@ -133,24 +143,87 @@ def generate_exec_brief(
         return _template_brief(facts)
 
 
-IncidentEvent = tuple[str, str, "str | None", str]  # (from_status, to_status, note, created_at)
+def _build_coa_prompt(facts: BriefFacts, playbook: str, target_status: str) -> str:
+    lines = [
+        "You are recommending a single, concrete Course of Action for an internal "
+        "escalations team working a public-signal alert about Claude (Anthropic's AI) "
+        "or the Claude API. Give ONE specific, actionable recommendation (who should do "
+        "what) in 1-2 sentences -- no preamble, no list of options, just the "
+        "recommendation itself.",
+        "",
+        f"This alert is now being moved to: {target_status}",
+        f"Category: {facts.category}",
+        f"Severity: {facts.severity}",
+        f"Platform(s): {', '.join(facts.platforms) or 'unknown'}",
+    ]
+    if facts.client:
+        lines.append(
+            f"This involves a specific enterprise client: {facts.client} -- if that "
+            "changes the right action (e.g. looping in their account team instead of a "
+            "generic public response), say so explicitly."
+        )
+    if facts.protection_tier == "flagship":
+        lines.append("This involves a FLAGSHIP-tier model -- treat with higher urgency.")
+    lines.append(f"The team's standing playbook for this category: {playbook}")
+    lines.append(f"Representative summary: {facts.issue_summary}")
+    return "\n".join(lines)
+
+
+def _template_coa(facts: BriefFacts, playbook: str) -> str:
+    base = playbook or f"Triage this {facts.category} alert manually."
+    if facts.client:
+        return f"{base} Regarding {facts.client}: loop in their account team given the client-scoped match."
+    return base
+
+
+def generate_coa(
+    settings: Settings,
+    facts: BriefFacts,
+    playbook: str,
+    target_status: str,
+    sleep_fn: Callable[[float], None] = time.sleep,
+) -> str:
+    """Always returns a usable Course of Action -- falls back to the
+    category's standing playbook (client-annotated when one is present) if
+    Claude is unavailable or the call fails, so a Kanban card never lands
+    with nothing to show.
+    """
+    try:
+        return _call_claude(
+            settings, _build_coa_prompt(facts, playbook, target_status), MAX_COA_TOKENS, sleep_fn
+        )
+    except BriefGenerationError:
+        logger.warning("Falling back to templated COA for %r", facts.subject)
+        return _template_coa(facts, playbook)
+
+
+# (from_status, to_status, note, coa, created_at)
+IncidentEvent = tuple[str, str, "str | None", "str | None", str]
 
 
 def _format_timeline_markdown(timeline: list[IncidentEvent]) -> str:
     if not timeline:
         return "_No status transitions recorded._"
     lines = []
-    for from_status, to_status, note, created_at in timeline:
+    for from_status, to_status, note, coa, created_at in timeline:
         line = f"- **{created_at}** — {from_status} → {to_status}"
         if note:
             line += f": {note}"
         lines.append(line)
+        if coa:
+            lines.append(f"  - Recommended: {coa}")
     return "\n".join(lines)
 
 
 def _build_report_narrative_prompt(
     facts: BriefFacts, timeline: list[IncidentEvent], closing_note: str
 ) -> str:
+    tier_line = (
+        "Model protection tier: flagship -- note explicitly that this carries more "
+        "business/reputational weight than the same issue on a smaller model.\n"
+        if facts.protection_tier == "flagship"
+        else ""
+    )
     return (
         "You are writing the 'What happened' section of an internal post-incident "
         "report about a public-signal alert for Claude (Anthropic's AI) or the "
@@ -160,6 +233,7 @@ def _build_report_narrative_prompt(
         f"Category: {facts.category}\n"
         f"Severity: {facts.severity}\n"
         f"Platform(s): {', '.join(facts.platforms) or 'unknown'}\n"
+        f"{tier_line}"
         f"Representative summary: {facts.issue_summary}\n"
         f"Status transitions: {_format_timeline_markdown(timeline)}\n"
         f"Closing note from the responder: {closing_note}"
@@ -199,6 +273,8 @@ def generate_incident_report(
         fact_lines.append(f"- Velocity: {facts.velocity:.1f} engagement points/hour")
     if facts.episode_count and facts.episode_count > 1:
         fact_lines.append(f"- Recurred {facts.episode_count} separate times")
+    if facts.protection_tier == "flagship":
+        fact_lines.append("- Model protection tier: **flagship**")
 
     return (
         f"# Post-incident report: {facts.subject}\n\n"

@@ -26,6 +26,7 @@
       <div class="footprint-filters">
         <div id="footprint-platform-filter" class="footprint-filter-group"></div>
         <div id="footprint-category-filter" class="footprint-filter-group"></div>
+        <div id="footprint-client-filter" class="footprint-filter-group" hidden></div>
       </div>
       <div class="footprint-layout">
         <div id="footprint-graph"><p class="empty-state">Loading…</p></div>
@@ -48,9 +49,12 @@
         a red ring means high severity ("full risk") -- independent of platform color, and absent
         entirely for low severity so a calm post stays uncluttered. A flashing red outer ring means
         that alert's incident is still "open" -- nobody has acknowledged or started working it yet
-        (see the Alerts tab); it stops flashing the moment someone does. Drag any node to
-        reposition it; click for a persistent detail card instead of a hover tooltip; uncheck a
-        platform or category above to hide it (double-click one to isolate it). The legend below is
+        (see the Alerts tab); it stops flashing the moment someone does. Click a hub to see its
+        protection tier (Settings &gt; Model protection) -- a flagship-model root cause is also
+        flagged in the Root-cause clusters chart below. Drag any node to reposition it; click for
+        a persistent detail card instead of a hover tooltip; uncheck a platform or category above to
+        hide it (double-click one to isolate it), or use the Client filter to isolate one watched
+        client's posts. The legend below is
         a color key only -- filtering lives above the graph, not split across both ends of it.
       </p>
     </div>
@@ -186,9 +190,13 @@
           <option value="mastodon">Mastodon</option>
         </select>
       </label>
+      <div class="view-toggle" role="tablist" aria-label="Alerts view">
+        <button type="button" class="view-toggle-btn is-active" data-view="table" role="tab" aria-selected="true">Table</button>
+        <button type="button" class="view-toggle-btn" data-view="board" role="tab" aria-selected="false">Board</button>
+      </div>
     </div>
 
-    <div class="card">
+    <div class="card" id="alerts-table-view">
       <table>
         <thead>
           <tr>
@@ -211,6 +219,24 @@
           <tr><td colspan="13" class="empty-state">Loading…</td></tr>
         </tbody>
       </table>
+    </div>
+
+    <div id="alerts-board-view" hidden>
+      <p class="watching-caption">
+        Drag a card to a new column to work it -- landing in Acknowledged, Mitigating, or Resolved
+        automatically generates a recommended Course of Action grounded in that category's
+        escalation-criteria playbook. Click a card for the full incident detail.
+      </p>
+      <div id="alerts-board"></div>
+    </div>
+
+    <div id="alert-card-modal" class="modal-overlay" hidden>
+      <div class="modal-panel">
+        <div class="modal-panel-header">
+          <button type="button" id="alert-card-modal-close">Close</button>
+        </div>
+        <div id="alert-card-modal-body"></div>
+      </div>
     </div>
   </section>
 
@@ -281,6 +307,21 @@
       <div class="settings-save-row">
         <button type="button" id="save-escalation-criteria-btn">Save escalation criteria</button>
         <span id="escalation-criteria-status" class="collection-status" role="status"></span>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>Model protection</h2>
+      <p class="source-picker-caption">
+        Per model: how much a leak/incident on it matters -- a flagship-model incident isn't the
+        same story as one on a small/cheap model -- plus an optional velocity-threshold override
+        (blank = use the category/platform/global default). Flagship-tier root causes are flagged
+        in the footprint graph's hub detail panel and the Home tab's Root-cause clusters chart.
+      </p>
+      <div id="model-tiers-list"><p class="empty-state">Loading…</p></div>
+      <div class="settings-save-row">
+        <button type="button" id="save-model-tiers-btn">Save model protection</button>
+        <span id="model-tiers-status" class="collection-status" role="status"></span>
       </div>
     </div>
   </section>

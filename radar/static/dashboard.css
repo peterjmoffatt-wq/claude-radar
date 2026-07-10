@@ -276,6 +276,23 @@ main {
   white-space: nowrap;
 }
 
+/* A plain text pill, not an icon -- see feedback: icon-as-status-signal read
+   as unpolished. --series-1 (not --status-warning, already used by
+   .recurring-tag) so the two tags stay visually distinct on a cluster that's
+   both recurring and flagship. */
+.flagship-tag {
+  display: inline-block;
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.02em;
+  color: var(--series-1);
+  border: 1px solid var(--series-1);
+  border-radius: 999px;
+  padding: 1px 6px;
+  white-space: nowrap;
+}
+
 .bar-hit {
   position: absolute;
   inset: 0;
@@ -1181,4 +1198,171 @@ tbody tr {
 
 #chart-tooltip strong {
   font-variant-numeric: tabular-nums;
+}
+
+/* -- Alerts tab: Table/Board toggle + Kanban board -- */
+
+.view-toggle {
+  display: flex;
+  gap: 2px;
+  margin-left: auto;
+}
+
+.view-toggle-btn {
+  font: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  padding: 6px 14px;
+  border: 1px solid var(--border);
+  background: var(--surface-1);
+  color: var(--text-secondary);
+  cursor: pointer;
+}
+
+.view-toggle-btn:first-child {
+  border-radius: 6px 0 0 6px;
+}
+
+.view-toggle-btn:last-child {
+  border-radius: 0 6px 6px 0;
+  border-left: none;
+}
+
+.view-toggle-btn.is-active {
+  background: var(--series-1);
+  border-color: var(--series-1);
+  color: #fff;
+}
+
+.board {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(220px, 1fr));
+  gap: 12px;
+  overflow-x: auto;
+  align-items: start;
+}
+
+.board-column {
+  background: var(--page-plane);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 10px;
+  min-height: 120px;
+  transition: background-color 0.15s ease;
+}
+
+.board-column--muted {
+  opacity: 0.7;
+}
+
+.board-column.is-drag-over {
+  background: color-mix(in srgb, var(--series-1) 10%, var(--page-plane));
+}
+
+.board-column-header {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-secondary);
+  margin-bottom: 8px;
+  text-transform: uppercase;
+  letter-spacing: 0.02em;
+}
+
+.board-column-cards {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-height: 40px;
+}
+
+.board-card {
+  background: var(--surface-1);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 8px 10px;
+  cursor: grab;
+  font-size: 12px;
+}
+
+.board-card:hover {
+  border-color: var(--series-1);
+}
+
+.board-card.is-dragging {
+  opacity: 0.4;
+}
+
+.board-card.board-card--moving {
+  opacity: 0.6;
+  pointer-events: none;
+}
+
+.board-card-badges {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 4px;
+}
+
+.board-card-platform {
+  color: var(--text-muted);
+  font-size: 11px;
+}
+
+.board-card-category {
+  font-weight: 600;
+  color: var(--text-primary);
+  margin-bottom: 4px;
+}
+
+.board-card-summary {
+  margin: 0 0 6px;
+  color: var(--text-secondary);
+  overflow-wrap: anywhere;
+}
+
+.board-card-coa {
+  margin: 0 0 6px;
+  padding: 6px 8px;
+  background: var(--page-plane);
+  border-radius: 4px;
+  color: var(--text-primary);
+  font-style: italic;
+}
+
+.board-card-coa:empty {
+  display: none;
+}
+
+/* -- alert card modal -- */
+
+.modal-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.4);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 20;
+}
+
+.modal-overlay[hidden] {
+  display: none;
+}
+
+.modal-panel {
+  background: var(--surface-1);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 16px;
+  max-width: 900px;
+  width: 90vw;
+  max-height: 85vh;
+  overflow-y: auto;
+}
+
+.modal-panel-header {
+  display: flex;
+  justify-content: flex-end;
+  margin-bottom: 8px;
 }

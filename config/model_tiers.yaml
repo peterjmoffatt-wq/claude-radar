@@ -1,0 +1,32 @@
+# Per-model protection tier: how much a leak/incident on this specific
+# model matters (a flagship-model incident isn't the same story as one on
+# a small/cheap model), plus an optional velocity-threshold override.
+# Dashboard-editable (Settings tab) -- see radar/config.py.
+models:
+  claude_opus:
+    protection_tier: flagship
+    velocity_threshold: null
+  claude_sonnet:
+    protection_tier: flagship
+    velocity_threshold: null
+  claude_haiku:
+    protection_tier: standard
+    velocity_threshold: null
+  claude_fable:
+    protection_tier: flagship
+    velocity_threshold: null
+  claude_api_general:
+    protection_tier: standard
+    velocity_threshold: null
+  claude_code:
+    protection_tier: standard
+    velocity_threshold: null
+  other_llm:
+    protection_tier: standard
+    velocity_threshold: null
+  not_applicable:
+    protection_tier: standard
+    velocity_threshold: null
+  unknown:
+    protection_tier: standard
+    velocity_threshold: null

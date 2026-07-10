@@ -11,6 +11,7 @@ from radar.config import (
     effective_velocity_threshold,
     get_settings,
     load_escalation_criteria,
+    load_model_tiers,
 )
 from radar.db import (
     get_connection,
@@ -64,12 +65,15 @@ def run_scoring(settings: Settings | None = None) -> ScoringResult:
             return ScoringResult(alerts_written=0, skipped=True)
 
         criteria = load_escalation_criteria()
+        model_tiers = load_model_tiers()
 
         written = 0
-        for post_id, category, severity, platform in pain_points:
+        for post_id, category, severity, platform, model_implicated in pain_points:
             history = get_snapshot_history(conn, post_id)
             velocity = compute_velocity(history)
-            threshold = effective_velocity_threshold(settings, criteria, platform, category)
+            threshold = effective_velocity_threshold(
+                settings, criteria, platform, category, model_tiers=model_tiers, model=model_implicated
+            )
             if velocity is None or velocity < threshold:
                 continue
 

@@ -50,6 +50,7 @@ class ModelImplicated(str, Enum):
     CLAUDE_OPUS = "claude_opus"
     CLAUDE_SONNET = "claude_sonnet"
     CLAUDE_HAIKU = "claude_haiku"
+    CLAUDE_FABLE = "claude_fable"
     CLAUDE_API_GENERAL = "claude_api_general"
     CLAUDE_CODE = "claude_code"
     OTHER_LLM = "other_llm"

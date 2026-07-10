@@ -159,6 +159,33 @@ def test_platforms_lists_every_distinct_platform_in_the_cluster(settings_factory
     assert cluster.platforms == ["reddit", "youtube"]
 
 
+def test_protection_tier_defaults_to_standard_when_no_model_tiers_given(settings_factory):
+    settings = settings_factory()
+    conn = get_connection(settings.database_path)
+    init_db(conn)
+    _seed(conn, "t3_a", "product_bug", "claude_fable", "high", "s", BASE)
+
+    clusters = get_clusters(conn)
+    conn.close()
+
+    cluster = next(c for c in clusters if c.cluster_key == "product_bug:claude_fable")
+    assert cluster.protection_tier == "standard"
+
+
+def test_protection_tier_comes_from_model_tiers_dict(settings_factory):
+    settings = settings_factory()
+    conn = get_connection(settings.database_path)
+    init_db(conn)
+    _seed(conn, "t3_a", "product_bug", "claude_fable", "high", "s", BASE)
+
+    model_tiers = {"claude_fable": {"protection_tier": "flagship"}}
+    clusters = get_clusters(conn, model_tiers=model_tiers)
+    conn.close()
+
+    cluster = next(c for c in clusters if c.cluster_key == "product_bug:claude_fable")
+    assert cluster.protection_tier == "flagship"
+
+
 def test_list_clusters_uses_settings_recurrence_gap_hours(settings_factory):
     from radar.cluster import list_clusters
 

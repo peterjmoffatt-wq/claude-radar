@@ -13,6 +13,7 @@ from radar.db import (
     get_unscored_pain_points,
     init_db,
     save_cluster_brief,
+    save_coa,
     save_exec_brief,
     save_incident_report,
     transition_incident,
@@ -362,6 +363,64 @@ def test_migrate_adds_incident_columns_to_pre_existing_alerts_table(tmp_path):
     assert row == ("t3_old", "open", None)
 
 
+def test_migrate_adds_coa_columns_to_pre_existing_tables(tmp_path):
+    # Simulates a database file created before the Course-of-Action columns
+    # existed (schema v5): build the OLD-shape alerts/incident_events tables
+    # by hand, confirm init_db() adds the new columns without losing data.
+    db_path = tmp_path / "old.db"
+    conn = sqlite3.connect(db_path)
+    conn.execute(
+        """
+        CREATE TABLE alerts (
+            id                            INTEGER PRIMARY KEY AUTOINCREMENT,
+            post_id                       TEXT NOT NULL,
+            triggered_at                  TEXT NOT NULL,
+            virality_score                REAL NOT NULL,
+            velocity                      REAL NOT NULL,
+            category                      TEXT NOT NULL,
+            severity                      TEXT NOT NULL,
+            qa_status                     TEXT NOT NULL,
+            incident_status               TEXT NOT NULL DEFAULT 'open',
+            exec_brief                    TEXT,
+            exec_brief_generated_at       TEXT,
+            incident_report               TEXT,
+            incident_report_generated_at  TEXT
+        )
+        """
+    )
+    conn.execute(
+        "INSERT INTO alerts (post_id, triggered_at, virality_score, velocity, category, "
+        "severity, qa_status) VALUES ('t3_old2', '2024-01-01T00:00:00+00:00', 10.0, 5.0, "
+        "'product_bug', 'high', 'not_required')"
+    )
+    conn.execute(
+        """
+        CREATE TABLE incident_events (
+            id           INTEGER PRIMARY KEY AUTOINCREMENT,
+            alert_id     INTEGER NOT NULL,
+            from_status  TEXT NOT NULL,
+            to_status    TEXT NOT NULL,
+            note         TEXT,
+            created_at   TEXT NOT NULL
+        )
+        """
+    )
+    conn.commit()
+    conn.close()
+
+    conn = get_connection(db_path)
+    init_db(conn)
+
+    alerts_columns = {row[1] for row in conn.execute("PRAGMA table_info(alerts)").fetchall()}
+    assert {"coa", "coa_generated_at"} <= alerts_columns
+    events_columns = {row[1] for row in conn.execute("PRAGMA table_info(incident_events)").fetchall()}
+    assert "coa" in events_columns
+
+    row = conn.execute("SELECT post_id, coa FROM alerts WHERE post_id = 't3_old2'").fetchone()
+    conn.close()
+    assert row == ("t3_old2", None)
+
+
 def test_new_alert_defaults_to_open_incident_status(tmp_path):
     conn = get_connection(tmp_path / "radar.db")
     init_db(conn)
@@ -387,9 +446,23 @@ def test_transition_incident_updates_status_and_logs_event(tmp_path):
     assert changed is True
     assert status == ("acknowledged",)
     assert len(timeline) == 1
-    from_status, to_status, note, created_at = timeline[0]
+    from_status, to_status, note, coa, created_at = timeline[0]
     assert (from_status, to_status, note) == ("open", "acknowledged", "Looking into it")
+    assert coa is None
     assert created_at
+
+
+def test_transition_incident_stores_coa_on_the_event_row(tmp_path):
+    conn = get_connection(tmp_path / "radar.db")
+    init_db(conn)
+    write_alert(conn, "t3_coa", 10.0, 5.0, "credential_theft", "high", "not_required")
+
+    transition_incident(conn, "t3_coa", "acknowledged", coa="Escalate to security immediately.")
+
+    timeline = get_incident_timeline(conn, "t3_coa")
+    conn.close()
+
+    assert timeline[0][3] == "Escalate to security immediately."
 
 
 def test_transition_incident_returns_false_when_no_alert_exists(tmp_path):
@@ -433,7 +506,7 @@ def test_get_incident_timeline_returns_events_oldest_first(tmp_path):
     timeline = get_incident_timeline(conn, "t3_b")
     conn.close()
 
-    assert [(f, t) for f, t, _, _ in timeline] == [
+    assert [(f, t) for f, t, _, _, _ in timeline] == [
         ("open", "acknowledged"),
         ("acknowledged", "mitigating"),
         ("mitigating", "resolved"),
@@ -481,6 +554,30 @@ def test_save_incident_report_persists_and_returns_true(tmp_path):
     assert changed is True
     assert row[0] == "# Post-incident report\n..."
     assert row[1]
+
+
+def test_save_coa_persists_and_returns_true(tmp_path):
+    conn = get_connection(tmp_path / "radar.db")
+    init_db(conn)
+    write_alert(conn, "t3_coa2", 10.0, 5.0, "product_bug", "high", "not_required")
+
+    changed = save_coa(conn, "t3_coa2", "File an engineering ticket, rank by severity.")
+
+    row = conn.execute("SELECT coa, coa_generated_at FROM alerts WHERE post_id = 't3_coa2'").fetchone()
+    conn.close()
+    assert changed is True
+    assert row[0] == "File an engineering ticket, rank by severity."
+    assert row[1]
+
+
+def test_save_coa_returns_false_when_no_alert_exists(tmp_path):
+    conn = get_connection(tmp_path / "radar.db")
+    init_db(conn)
+
+    changed = save_coa(conn, "t3_missing", "some coa")
+    conn.close()
+
+    assert changed is False
 
 
 def test_cluster_brief_save_and_get_round_trip(tmp_path):

@@ -34,6 +34,7 @@ def _seed_alert(
     comments: int = 4,
     score: int = 88,
     shares: int = 2,
+    model_implicated: str = "claude_api_general",
 ) -> None:
     now = datetime.now(timezone.utc).isoformat()
     conn.execute(
@@ -41,9 +42,9 @@ def _seed_alert(
         INSERT INTO classifications (
             post_id, is_pain_point, category, model_implicated, severity,
             issue_summary, classifier_model, classified_at
-        ) VALUES (?, 1, ?, 'claude_api_general', ?, 'a summary', 'test-model', ?)
+        ) VALUES (?, 1, ?, ?, ?, 'a summary', 'test-model', ?)
         """,
-        (post_id, category, severity, now),
+        (post_id, category, model_implicated, severity, now),
     )
     conn.execute(
         """
@@ -532,8 +533,13 @@ def test_api_review_approve_does_not_touch_incident_status(client):
     assert incident_status == "open"
 
 
-def test_api_alert_transition_updates_status(client):
-    test_client, settings = client
+def test_api_alert_transition_updates_status(settings_factory, monkeypatch):
+    # No ANTHROPIC_API_KEY -- COA generation falls back to the (fast,
+    # network-free) template path, keeping this test deterministic; the
+    # Claude-generated-COA behavior itself is covered by dedicated tests below.
+    settings = settings_factory(anthropic_api_key="")
+    monkeypatch.setattr(api_module, "get_settings", lambda: settings)
+    test_client = TestClient(api_module.app)
     conn = get_connection(settings.database_path)
     init_db(conn)
     _seed_alert(conn, "t3_a")
@@ -544,7 +550,10 @@ def test_api_alert_transition_updates_status(client):
     )
 
     assert response.status_code == 200
-    assert response.json() == {"post_id": "t3_a", "incident_status": "acknowledged"}
+    body = response.json()
+    assert body["post_id"] == "t3_a"
+    assert body["incident_status"] == "acknowledged"
+    assert body["coa"]  # template fallback still produces something
 
 
 def test_api_alert_transition_404_when_no_alert(client):
@@ -565,12 +574,19 @@ def test_api_alert_transition_rejects_invalid_status(client):
     assert response.status_code == 422
 
 
-def test_api_alert_timeline_returns_events_in_order(client):
+@respx.mock
+def test_api_alert_timeline_returns_events_in_order(client, load_anthropic_fixture):
     test_client, settings = client
     conn = get_connection(settings.database_path)
     init_db(conn)
     _seed_alert(conn, "t3_a")
     conn.close()
+    # Not testing COA content here -- a 200 response (rather than a 4xx/5xx,
+    # which would trigger RateLimitedClient's real exponential-backoff sleep
+    # even though the network call itself is mocked) keeps this test fast.
+    respx.post(ANTHROPIC_API_URL).mock(
+        return_value=httpx.Response(200, json=load_anthropic_fixture("brief_text_response.json"))
+    )
 
     test_client.post("/api/alerts/t3_a/transition", json={"status": "acknowledged"})
     test_client.post("/api/alerts/t3_a/transition", json={"status": "resolved", "note": "Fixed"})
@@ -749,3 +765,190 @@ def test_api_put_escalation_criteria_rejects_invalid_shape(client):
         json={"categories": {"product_bug": {"requires_qa": "not-a-bool"}}},
     )
     assert response.status_code == 422
+
+
+def test_api_alerts_includes_client_for_client_scoped_hit(tmp_path, monkeypatch, client):
+    test_client, settings = client
+    yaml_path = tmp_path / "search_terms.yaml"
+    yaml_path.write_text(
+        "subreddits: []\nterms: []\nclients:\n  - McDonald's\nrisk_patterns:\n  - jailbreak\n"
+    )
+    monkeypatch.setattr(
+        api_module, "load_search_terms", lambda: config_module.load_search_terms(yaml_path)
+    )
+    conn = get_connection(settings.database_path)
+    init_db(conn)
+    _seed_alert(conn, "t3_client", matched_term="McDonald's jailbreak")
+    _seed_alert(conn, "t3_generic", matched_term="Claude API")
+    conn.close()
+
+    response = test_client.get("/api/alerts")
+
+    body = {a["post_id"]: a["client"] for a in response.json()}
+    assert body["t3_client"] == "McDonald's"
+    assert body["t3_generic"] is None
+
+
+def test_api_watching_includes_client_for_client_scoped_hit(tmp_path, monkeypatch, client):
+    test_client, settings = client
+    yaml_path = tmp_path / "search_terms.yaml"
+    yaml_path.write_text(
+        "subreddits: []\nterms: []\nclients:\n  - Acme Corp\nrisk_patterns:\n  - token theft\n"
+    )
+    monkeypatch.setattr(
+        api_module, "load_search_terms", lambda: config_module.load_search_terms(yaml_path)
+    )
+    conn = get_connection(settings.database_path)
+    init_db(conn)
+    _seed_classification_only(conn, "t3_watch", matched_term="Acme Corp token theft")
+    conn.close()
+
+    response = test_client.get("/api/watching")
+
+    assert response.json()[0]["client"] == "Acme Corp"
+
+
+def test_api_clusters_includes_protection_tier(client):
+    test_client, settings = client
+    conn = get_connection(settings.database_path)
+    init_db(conn)
+    _seed_alert(conn, "t3_a", category="product_bug", model_implicated="claude_fable")
+    conn.close()
+
+    response = test_client.get("/api/clusters")
+
+    cluster = next(c for c in response.json() if c["cluster_key"] == "product_bug:claude_fable")
+    assert cluster["protection_tier"] == "flagship"
+
+
+def test_api_get_model_tiers_returns_defaults(client):
+    test_client, _settings = client
+    response = test_client.get("/api/model-tiers")
+
+    assert response.status_code == 200
+    models = response.json()["models"]
+    assert models["claude_opus"]["protection_tier"] == "flagship"
+    assert models["claude_fable"]["protection_tier"] == "flagship"
+    assert models["claude_haiku"]["protection_tier"] == "standard"
+
+
+def test_api_put_model_tiers_persists_and_affects_scoring(tmp_path, monkeypatch, client):
+    test_client, settings = client
+    yaml_path = tmp_path / "model_tiers.yaml"
+    monkeypatch.setattr(
+        api_module, "load_model_tiers", lambda: config_module.load_model_tiers(yaml_path)
+    )
+    monkeypatch.setattr(
+        api_module,
+        "save_model_tiers",
+        lambda updates: config_module.save_model_tiers(updates, path=yaml_path),
+    )
+
+    response = test_client.put(
+        "/api/model-tiers",
+        json={
+            "models": {
+                "claude_haiku": {"protection_tier": "standard", "velocity_threshold": 999.0}
+            }
+        },
+    )
+
+    assert response.status_code == 200
+    body = response.json()["models"]
+    assert body["claude_haiku"]["velocity_threshold"] == 999.0
+    reloaded = config_module.load_model_tiers(yaml_path)
+    assert reloaded["claude_haiku"]["velocity_threshold"] == 999.0
+    assert reloaded["claude_opus"]["protection_tier"] == "flagship"  # untouched
+
+
+def test_api_put_model_tiers_rejects_invalid_tier(client):
+    test_client, _settings = client
+    response = test_client.put(
+        "/api/model-tiers",
+        json={"models": {"claude_haiku": {"protection_tier": "super-duper", "velocity_threshold": None}}},
+    )
+    assert response.status_code == 422
+
+
+@respx.mock
+def test_api_alert_brief_mentions_flagship_tier(client, load_anthropic_fixture):
+    test_client, settings = client
+    conn = get_connection(settings.database_path)
+    init_db(conn)
+    _seed_alert(conn, "t3_flagship", model_implicated="claude_fable")
+    conn.close()
+    # 401 (not 429/5xx) forces the template fallback without also triggering
+    # RateLimitedClient's real exponential-backoff sleep between retries.
+    respx.post(ANTHROPIC_API_URL).mock(return_value=httpx.Response(401))
+
+    response = test_client.post("/api/alerts/t3_flagship/brief")
+
+    assert response.status_code == 200
+    assert "FLAGSHIP" in response.json()["brief"]
+
+
+@respx.mock
+def test_api_alert_transition_generates_coa_for_actionable_status(client, load_anthropic_fixture):
+    test_client, settings = client
+    conn = get_connection(settings.database_path)
+    init_db(conn)
+    _seed_alert(conn, "t3_a", category="credential_theft")
+    conn.close()
+    respx.post(ANTHROPIC_API_URL).mock(
+        return_value=httpx.Response(200, json=load_anthropic_fixture("brief_text_response.json"))
+    )
+
+    response = test_client.post("/api/alerts/t3_a/transition", json={"status": "acknowledged"})
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["coa"]
+    assert "Recommend eng triage" in body["coa"]
+
+    # Persisted both as the alert's current COA and on the timeline event.
+    conn = get_connection(settings.database_path)
+    stored = conn.execute("SELECT coa FROM alerts WHERE post_id='t3_a'").fetchone()[0]
+    conn.close()
+    assert stored == body["coa"]
+
+    timeline = test_client.get("/api/alerts/t3_a/timeline").json()
+    assert timeline[0]["coa"] == body["coa"]
+
+
+@pytest.mark.parametrize("status", ["open", "false_positive"])
+def test_api_alert_transition_no_coa_for_non_actionable_status(status, settings_factory, monkeypatch):
+    # No respx mock at all -- if this accidentally tried to call Claude, the
+    # test would hang/fail on a real network attempt, proving no call happens.
+    settings = settings_factory()
+    monkeypatch.setattr(api_module, "get_settings", lambda: settings)
+    test_client = TestClient(api_module.app)
+    conn = get_connection(settings.database_path)
+    init_db(conn)
+    _seed_alert(conn, "t3_a")
+    conn.close()
+
+    response = test_client.post("/api/alerts/t3_a/transition", json={"status": status})
+
+    assert response.status_code == 200
+    assert response.json()["coa"] is None
+
+
+def test_api_alert_transition_coa_mentions_client_when_present(tmp_path, monkeypatch, client):
+    test_client, settings = client
+    yaml_path = tmp_path / "search_terms.yaml"
+    yaml_path.write_text(
+        "subreddits: []\nterms: []\nclients:\n  - McDonald's\nrisk_patterns:\n  - token theft\n"
+    )
+    monkeypatch.setattr(
+        api_module, "load_search_terms", lambda: config_module.load_search_terms(yaml_path)
+    )
+    monkeypatch.setattr(api_module, "get_settings", lambda: settings.model_copy(update={"anthropic_api_key": ""}))
+    conn = get_connection(settings.database_path)
+    init_db(conn)
+    _seed_alert(conn, "t3_client", category="credential_theft", matched_term="McDonald's token theft")
+    conn.close()
+
+    response = test_client.post("/api/alerts/t3_client/transition", json={"status": "mitigating"})
+
+    assert response.status_code == 200
+    assert "McDonald's" in response.json()["coa"]

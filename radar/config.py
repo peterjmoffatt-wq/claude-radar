@@ -8,11 +8,12 @@ import yaml
 from pydantic import model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-from radar.models import PainCategory
+from radar.models import ModelImplicated, PainCategory
 
 DEFAULT_SEARCH_TERMS_PATH = Path("config/search_terms.yaml")
 DEFAULT_KNOWN_INCIDENTS_PATH = Path("config/known_incidents.yaml")
 DEFAULT_ESCALATION_CRITERIA_PATH = Path("config/escalation_criteria.yaml")
+DEFAULT_MODEL_TIERS_PATH = Path("config/model_tiers.yaml")
 
 # Applies to each of the terms/clients/risk_patterns lists independently --
 # enforced in the API layer (radar/api.py), not here, so this stays a plain
@@ -106,6 +107,29 @@ DEFAULT_ESCALATION_CRITERIA: dict[str, dict[str, Any]] = {
         "velocity_threshold": None,
         "response_template": "Triage manually -- doesn't fit an existing category cleanly.",
     },
+}
+
+_MODEL_TIERS_HEADER = (
+    "# Per-model protection tier: how much a leak/incident on this specific\n"
+    "# model matters (a flagship-model incident isn't the same story as one on\n"
+    "# a small/cheap model), plus an optional velocity-threshold override.\n"
+    "# Dashboard-editable (Settings tab) -- see radar/config.py.\n"
+)
+
+# Seeds config/model_tiers.yaml the first time it's saved. "flagship" for the
+# current-generation, headline models; "standard" for smaller/cheaper models
+# and the generic/non-model-specific buckets -- nothing here changes existing
+# scoring behavior until a tier's velocity_threshold is actually set.
+DEFAULT_MODEL_TIERS: dict[str, dict[str, Any]] = {
+    "claude_opus": {"protection_tier": "flagship", "velocity_threshold": None},
+    "claude_sonnet": {"protection_tier": "flagship", "velocity_threshold": None},
+    "claude_fable": {"protection_tier": "flagship", "velocity_threshold": None},
+    "claude_haiku": {"protection_tier": "standard", "velocity_threshold": None},
+    "claude_api_general": {"protection_tier": "standard", "velocity_threshold": None},
+    "claude_code": {"protection_tier": "standard", "velocity_threshold": None},
+    "other_llm": {"protection_tier": "standard", "velocity_threshold": None},
+    "not_applicable": {"protection_tier": "standard", "velocity_threshold": None},
+    "unknown": {"protection_tier": "standard", "velocity_threshold": None},
 }
 
 
@@ -324,17 +348,89 @@ def category_requires_qa(criteria: dict[str, dict[str, Any]], category: str) -> 
     return bool(criteria.get(category, {}).get("requires_qa", False))
 
 
+def load_model_tiers(path: Path = DEFAULT_MODEL_TIERS_PATH) -> dict[str, dict[str, Any]]:
+    """Every ModelImplicated value always gets a full {protection_tier,
+    velocity_threshold} entry -- same fallback shape as
+    load_escalation_criteria(): saved values win, missing ones (a model added
+    after the file was last saved, or the file not existing yet) fall back to
+    DEFAULT_MODEL_TIERS.
+    """
+    if path.exists():
+        with open(path, encoding="utf-8") as f:
+            data = yaml.safe_load(f)
+        saved = (data or {}).get("models", {})
+    else:
+        saved = {}
+    return {
+        model.value: {**DEFAULT_MODEL_TIERS[model.value], **saved.get(model.value, {})}
+        for model in ModelImplicated
+    }
+
+
+def save_model_tiers(
+    updates: dict[str, dict[str, Any]], path: Path = DEFAULT_MODEL_TIERS_PATH
+) -> dict[str, dict[str, Any]]:
+    """Merges `updates` (keyed by ModelImplicated value) into the
+    currently-saved tiers and writes it back -- same merge-on-save shape as
+    save_escalation_criteria().
+    """
+    current = load_model_tiers(path)
+    for model_value, fields in updates.items():
+        current.setdefault(model_value, dict(DEFAULT_MODEL_TIERS.get(model_value, {})))
+        current[model_value].update(fields)
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(path, "w", encoding="utf-8") as f:
+        f.write(_MODEL_TIERS_HEADER)
+        yaml.safe_dump({"models": current}, f, sort_keys=False, default_flow_style=False)
+    return current
+
+
+def protection_tier_for(model_tiers: dict[str, dict[str, Any]], model: str) -> str:
+    return model_tiers.get(model, {}).get("protection_tier", "standard")
+
+
 def effective_velocity_threshold(
-    settings: "Settings", criteria: dict[str, dict[str, Any]], platform: str, category: str
+    settings: "Settings",
+    criteria: dict[str, dict[str, Any]],
+    platform: str,
+    category: str,
+    model_tiers: dict[str, dict[str, Any]] | None = None,
+    model: str | None = None,
 ) -> float:
-    """Precedence: a category-specific override (escalation_criteria.yaml,
-    dashboard-editable) wins over a platform-specific override
-    (velocity_threshold_overrides, env-only) wins over the global default.
-    Category-driven escalation urgency is the more intentional signal this
-    feature is about; the platform override is a data-normalization default
-    (YouTube views vs. Reddit upvotes), a separate, orthogonal concern.
+    """Precedence: category override (escalation_criteria.yaml) > model
+    override (model_tiers.yaml) > platform override
+    (velocity_threshold_overrides, env-only) > global default.
+
+    Category stays most specific/intentional; model protection is the next
+    most specific signal (a flagship-model incident should alert sooner than
+    the same issue on a small model); the platform override is a
+    data-normalization default (YouTube views vs. Reddit upvotes), the most
+    generic of the three.
     """
     category_override = criteria.get(category, {}).get("velocity_threshold")
     if category_override is not None:
         return float(category_override)
+    if model_tiers is not None and model is not None:
+        model_override = model_tiers.get(model, {}).get("velocity_threshold")
+        if model_override is not None:
+            return float(model_override)
     return settings.velocity_threshold_for(platform)
+
+
+def client_for_matched_term(
+    matched_term: str | None, search_config: dict[str, Any]
+) -> str | None:
+    """Which watched client (if any) a post's matched_term came from -- e.g.
+    "McDonald's jailbreak" -> "McDonald's". None for a generic (non-client-
+    scoped) term. Lets the dashboard filter the footprint graph down to one
+    client's posts specifically, cutting out unrelated noise.
+    """
+    if not matched_term:
+        return None
+    term_to_client = {
+        f"{client} {pattern}": client
+        for client in search_config.get("clients", [])
+        for pattern in search_config.get("risk_patterns", [])
+    }
+    return term_to_client.get(matched_term)

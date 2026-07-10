@@ -9,7 +9,7 @@ from radar.hashing import hash_author
 from radar.models import Classification, RawPost
 from radar.virality import virality_score
 
-SCHEMA_VERSION = "5"
+SCHEMA_VERSION = "6"
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS snapshots (
@@ -65,7 +65,11 @@ CREATE TABLE IF NOT EXISTS alerts (
     exec_brief                    TEXT,
     exec_brief_generated_at       TEXT,
     incident_report               TEXT,
-    incident_report_generated_at  TEXT
+    incident_report_generated_at  TEXT,
+    -- Current recommended Course of Action -- same fast-read/overwrite-on-
+    -- regenerate shape as exec_brief. See radar/brief.py's generate_coa().
+    coa                           TEXT,
+    coa_generated_at              TEXT
 );
 
 CREATE INDEX IF NOT EXISTS idx_alerts_post_id ON alerts(post_id);
@@ -90,6 +94,11 @@ CREATE TABLE IF NOT EXISTS incident_events (
     from_status  TEXT NOT NULL,
     to_status    TEXT NOT NULL,
     note         TEXT,
+    -- The system-recommended Course of Action generated for *this specific*
+    -- transition (Kanban board), distinct from `note` (a human-entered
+    -- reason) -- kept so the timeline shows what was recommended at each
+    -- stage, not just the latest one (see alerts.coa for that).
+    coa          TEXT,
     created_at   TEXT NOT NULL
 );
 
@@ -146,6 +155,16 @@ def _migrate(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE alerts ADD COLUMN incident_report TEXT")
     if "incident_report_generated_at" not in alerts_columns:
         conn.execute("ALTER TABLE alerts ADD COLUMN incident_report_generated_at TEXT")
+    if "coa" not in alerts_columns:
+        conn.execute("ALTER TABLE alerts ADD COLUMN coa TEXT")
+    if "coa_generated_at" not in alerts_columns:
+        conn.execute("ALTER TABLE alerts ADD COLUMN coa_generated_at TEXT")
+
+    incident_events_columns = {
+        row[1] for row in conn.execute("PRAGMA table_info(incident_events)").fetchall()
+    }
+    if "coa" not in incident_events_columns:
+        conn.execute("ALTER TABLE incident_events ADD COLUMN coa TEXT")
 
 
 def init_db(conn: sqlite3.Connection) -> None:
@@ -307,14 +326,15 @@ def count_advertisements(conn: sqlite3.Connection) -> int:
     return row[0] if row else 0
 
 
-def get_pain_point_posts(conn: sqlite3.Connection) -> list[tuple[str, str, str, str]]:
-    """(post_id, category, severity, platform) for every post classified as a
-    pain point -- platform comes from the post's latest snapshot, needed so
-    run_scoring() can apply a per-platform velocity threshold.
+def get_pain_point_posts(conn: sqlite3.Connection) -> list[tuple[str, str, str, str, str]]:
+    """(post_id, category, severity, platform, model_implicated) for every post
+    classified as a pain point -- platform comes from the post's latest
+    snapshot (per-platform velocity threshold); model_implicated lets
+    run_scoring() apply a per-model velocity threshold override too.
     """
     return conn.execute(
         """
-        SELECT c.post_id, c.category, c.severity, ls.platform
+        SELECT c.post_id, c.category, c.severity, ls.platform, c.model_implicated
         FROM classifications c
         JOIN (
             SELECT s.post_id, s.platform
@@ -410,7 +430,8 @@ def get_alerts(
                ls.url, ls.platform, ls.matched_term,
                ls.hashed_author, ls.likes, ls.comments, ls.score, ls.shares, ls.created_at,
                a.incident_status, a.exec_brief, a.exec_brief_generated_at,
-               a.incident_report, a.incident_report_generated_at
+               a.incident_report, a.incident_report_generated_at,
+               a.coa, a.coa_generated_at
         FROM alerts a
         JOIN classifications c ON c.post_id = a.post_id
         JOIN (
@@ -582,11 +603,18 @@ def _latest_alert_id(conn: sqlite3.Connection, post_id: str) -> int | None:
 
 
 def transition_incident(
-    conn: sqlite3.Connection, post_id: str, new_status: str, note: str | None = None
+    conn: sqlite3.Connection,
+    post_id: str,
+    new_status: str,
+    note: str | None = None,
+    coa: str | None = None,
 ) -> bool:
     """Moves the post's latest alert to a new incident_status, logging the
     transition to incident_events -- independent of qa_status (see the
-    `incident_status` column comment in _SCHEMA).
+    `incident_status` column comment in _SCHEMA). `coa` is the system-
+    recommended Course of Action generated for this specific transition (the
+    Kanban board), stored on the event row alongside any human `note` --
+    callers also persist it as the alert's *current* COA via save_coa().
 
     Returns whether a row was actually updated (False if no alert exists).
     """
@@ -600,9 +628,9 @@ def transition_incident(
     alert_id, from_status = row
     conn.execute("UPDATE alerts SET incident_status = ? WHERE id = ?", (new_status, alert_id))
     conn.execute(
-        "INSERT INTO incident_events (alert_id, from_status, to_status, note, created_at) "
-        "VALUES (?, ?, ?, ?, ?)",
-        (alert_id, from_status, new_status, note, datetime.now(timezone.utc).isoformat()),
+        "INSERT INTO incident_events (alert_id, from_status, to_status, note, coa, created_at) "
+        "VALUES (?, ?, ?, ?, ?, ?)",
+        (alert_id, from_status, new_status, note, coa, datetime.now(timezone.utc).isoformat()),
     )
     conn.commit()
     return True
@@ -610,14 +638,15 @@ def transition_incident(
 
 def get_incident_timeline(
     conn: sqlite3.Connection, post_id: str
-) -> list[tuple[str, str, str | None, str]]:
-    """(from_status, to_status, note, created_at) for the post's latest alert,
-    oldest first -- shown in the incident detail panel and folded into the
-    post-incident report.
+) -> list[tuple[str, str, str | None, str | None, str]]:
+    """(from_status, to_status, note, coa, created_at) for the post's latest
+    alert, oldest first -- shown in the incident detail panel and folded into
+    the post-incident report. `coa` is the Course of Action generated for
+    that specific transition (Kanban board), if any.
     """
     return conn.execute(
         """
-        SELECT e.from_status, e.to_status, e.note, e.created_at
+        SELECT e.from_status, e.to_status, e.note, e.coa, e.created_at
         FROM incident_events e
         WHERE e.alert_id = (
             SELECT a.id FROM alerts a WHERE a.post_id = ?
@@ -651,6 +680,22 @@ def save_incident_report(conn: sqlite3.Connection, post_id: str, report_markdown
     conn.execute(
         "UPDATE alerts SET incident_report = ?, incident_report_generated_at = ? WHERE id = ?",
         (report_markdown, datetime.now(timezone.utc).isoformat(), alert_id),
+    )
+    conn.commit()
+    return True
+
+
+def save_coa(conn: sqlite3.Connection, post_id: str, coa: str) -> bool:
+    """Persists the current recommended Course of Action on the post's latest
+    alert row -- regenerating (moving to a new Kanban column) overwrites it,
+    same shape as save_exec_brief().
+    """
+    alert_id = _latest_alert_id(conn, post_id)
+    if alert_id is None:
+        return False
+    conn.execute(
+        "UPDATE alerts SET coa = ?, coa_generated_at = ? WHERE id = ?",
+        (coa, datetime.now(timezone.utc).isoformat(), alert_id),
     )
     conn.commit()
     return True

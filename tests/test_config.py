@@ -5,16 +5,21 @@ from pydantic import ValidationError
 
 from radar.config import (
     DEFAULT_ESCALATION_CRITERIA,
+    DEFAULT_MODEL_TIERS,
     DEFAULT_RISK_PATTERNS,
     MAX_EFFECTIVE_TERMS,
     Settings,
     category_requires_qa,
+    client_for_matched_term,
     effective_terms,
     effective_velocity_threshold,
     load_escalation_criteria,
     load_known_incidents,
+    load_model_tiers,
     load_search_terms,
+    protection_tier_for,
     save_escalation_criteria,
+    save_model_tiers,
     save_search_terms,
 )
 
@@ -204,6 +209,95 @@ def test_effective_velocity_threshold_falls_back_to_platform_override():
 def test_effective_velocity_threshold_falls_back_to_global_default():
     settings = Settings(author_hash_pepper="pepper", velocity_threshold=10.0, _env_file=None)
     assert effective_velocity_threshold(settings, {}, "reddit", "product_bug") == 10.0
+
+
+def test_effective_velocity_threshold_model_override_wins_over_platform():
+    settings = Settings(
+        author_hash_pepper="pepper",
+        velocity_threshold=10.0,
+        velocity_threshold_overrides={"youtube": 500.0},
+        _env_file=None,
+    )
+    model_tiers = {"claude_fable": {"velocity_threshold": 2.0}}
+    assert (
+        effective_velocity_threshold(
+            settings, {}, "youtube", "product_bug", model_tiers=model_tiers, model="claude_fable"
+        )
+        == 2.0
+    )
+
+
+def test_effective_velocity_threshold_category_override_still_wins_over_model():
+    settings = Settings(author_hash_pepper="pepper", velocity_threshold=10.0, _env_file=None)
+    criteria = {"credential_theft": {"velocity_threshold": 1.0}}
+    model_tiers = {"claude_fable": {"velocity_threshold": 5.0}}
+    assert (
+        effective_velocity_threshold(
+            settings,
+            criteria,
+            "reddit",
+            "credential_theft",
+            model_tiers=model_tiers,
+            model="claude_fable",
+        )
+        == 1.0
+    )
+
+
+def test_effective_velocity_threshold_ignores_model_tiers_when_model_not_given():
+    # Callers that don't pass model_tiers/model (or a model with no override
+    # set) must behave exactly as before this feature existed.
+    settings = Settings(
+        author_hash_pepper="pepper",
+        velocity_threshold=10.0,
+        velocity_threshold_overrides={"youtube": 500.0},
+        _env_file=None,
+    )
+    model_tiers = {"claude_fable": {"velocity_threshold": 2.0}}
+    assert (
+        effective_velocity_threshold(settings, {}, "youtube", "product_bug", model_tiers=model_tiers)
+        == 500.0
+    )
+
+
+def test_load_model_tiers_returns_defaults_when_file_missing(tmp_path):
+    tiers = load_model_tiers(path=tmp_path / "does_not_exist.yaml")
+    assert tiers == DEFAULT_MODEL_TIERS
+    assert tiers["claude_opus"]["protection_tier"] == "flagship"
+    assert tiers["claude_fable"]["protection_tier"] == "flagship"
+    assert tiers["claude_haiku"]["protection_tier"] == "standard"
+
+
+def test_save_model_tiers_merges_and_preserves_other_models(tmp_path):
+    yaml_path = tmp_path / "model_tiers.yaml"
+
+    save_model_tiers({"claude_haiku": {"velocity_threshold": 50.0}}, path=yaml_path)
+    reloaded = load_model_tiers(path=yaml_path)
+
+    assert reloaded["claude_haiku"]["velocity_threshold"] == 50.0
+    assert reloaded["claude_haiku"]["protection_tier"] == "standard"  # untouched
+    assert reloaded["claude_opus"] == DEFAULT_MODEL_TIERS["claude_opus"]
+
+
+def test_protection_tier_for():
+    tiers = {"claude_opus": {"protection_tier": "flagship"}}
+    assert protection_tier_for(tiers, "claude_opus") == "flagship"
+    assert protection_tier_for(tiers, "unknown_model") == "standard"
+
+
+def test_client_for_matched_term_identifies_client_scoped_hit():
+    search_config = {"clients": ["McDonald's"], "risk_patterns": ["jailbreak", "credential leak"]}
+    assert client_for_matched_term("McDonald's jailbreak", search_config) == "McDonald's"
+    assert client_for_matched_term("McDonald's credential leak", search_config) == "McDonald's"
+
+
+def test_client_for_matched_term_returns_none_for_generic_term():
+    search_config = {"clients": ["McDonald's"], "risk_patterns": ["jailbreak"]}
+    assert client_for_matched_term("Claude API", search_config) is None
+
+
+def test_client_for_matched_term_returns_none_for_missing_term():
+    assert client_for_matched_term(None, {"clients": [], "risk_patterns": []}) is None
 
 
 def test_effective_terms_truncated_to_max_with_generic_terms_kept_first():

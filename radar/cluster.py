@@ -3,7 +3,9 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime
 
-from radar.config import Settings, get_settings
+from typing import Any
+
+from radar.config import Settings, get_settings, load_model_tiers, protection_tier_for
 from radar.db import get_alerts_for_clustering, get_connection, init_db
 
 _SEVERITY_RANK = {"low": 1, "med": 2, "high": 3}
@@ -21,6 +23,7 @@ class ClusterSummary:
     first_triggered_at: str
     episode_count: int
     platforms: list[str]
+    protection_tier: str
     representative_issue_summary: str
 
 
@@ -43,12 +46,15 @@ def _count_episodes(sorted_timestamps: list[datetime], gap_hours: float) -> int:
 
 
 def get_clusters(
-    conn, recurrence_gap_hours: float = DEFAULT_RECURRENCE_GAP_HOURS
+    conn,
+    recurrence_gap_hours: float = DEFAULT_RECURRENCE_GAP_HOURS,
+    model_tiers: dict[str, dict[str, Any]] | None = None,
 ) -> list[ClusterSummary]:
     """Deterministic root-cause grouping by (category, model_implicated) -- a pure function
     of already-classified alerts, computed at query time rather than persisted.
     """
     rows = get_alerts_for_clustering(conn)
+    model_tiers = model_tiers or {}
 
     groups: dict[tuple[str, str], list[tuple[str, str, str, str]]] = {}
     for category, model_implicated, severity, issue_summary, triggered_at, platform in rows:
@@ -73,6 +79,7 @@ def get_clusters(
                 first_triggered_at=earliest[2],
                 episode_count=_count_episodes(timestamps, recurrence_gap_hours),
                 platforms=platforms,
+                protection_tier=protection_tier_for(model_tiers, model_implicated),
                 representative_issue_summary=latest[1],
             )
         )
@@ -86,7 +93,11 @@ def list_clusters(settings: Settings | None = None) -> list[ClusterSummary]:
     conn = get_connection(settings.database_path)
     init_db(conn)
     try:
-        return get_clusters(conn, recurrence_gap_hours=settings.recurrence_gap_hours)
+        return get_clusters(
+            conn,
+            recurrence_gap_hours=settings.recurrence_gap_hours,
+            model_tiers=load_model_tiers(),
+        )
     finally:
         conn.close()
 
@@ -98,9 +109,10 @@ def main() -> None:
         return
     for c in clusters:
         recurring = f"\trecurring x{c.episode_count}" if c.episode_count > 1 else ""
+        flagship = "\tFLAGSHIP" if c.protection_tier == "flagship" else ""
         print(
             f"{c.label}\tn={c.alert_count}\tmax_severity={c.max_severity}\t"
-            f"latest={c.latest_triggered_at}{recurring}\t{c.representative_issue_summary}"
+            f"latest={c.latest_triggered_at}{recurring}{flagship}\t{c.representative_issue_summary}"
         )
 
 

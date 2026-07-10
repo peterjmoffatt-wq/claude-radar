@@ -55,16 +55,21 @@ def _insert_snapshot(
 
 
 def _insert_classification(
-    conn, post_id: str, category: str = "product_bug", severity: str = "high", is_pain_point: bool = True
+    conn,
+    post_id: str,
+    category: str = "product_bug",
+    severity: str = "high",
+    is_pain_point: bool = True,
+    model_implicated: str = "claude_api_general",
 ) -> None:
     conn.execute(
         """
         INSERT INTO classifications (
             post_id, is_pain_point, category, model_implicated, severity,
             issue_summary, classifier_model, classified_at
-        ) VALUES (?, ?, ?, 'claude_api_general', ?, 'summary', 'test-model', ?)
+        ) VALUES (?, ?, ?, ?, ?, 'summary', 'test-model', ?)
         """,
-        (post_id, int(is_pain_point), category, severity, datetime.now(timezone.utc).isoformat()),
+        (post_id, int(is_pain_point), category, model_implicated, severity, datetime.now(timezone.utc).isoformat()),
     )
     conn.commit()
 
@@ -274,6 +279,58 @@ def test_category_velocity_threshold_override_wins_over_platform_override(
     _insert_snapshot(conn, "t3_g", BASE, 10.0, poll_run_id="run-1", platform="youtube")
     _insert_snapshot(conn, "t3_g", BASE + timedelta(hours=1), 50.0, poll_run_id="run-2", platform="youtube")
     _insert_classification(conn, "t3_g", category="credential_theft")
+    conn.close()
+
+    result = run_scoring(settings)
+
+    assert result.alerts_written == 1
+
+
+def test_model_velocity_threshold_override_wins_over_platform_override(
+    settings_factory, monkeypatch
+):
+    # A model-tier override (model_tiers.yaml, e.g. protecting a flagship
+    # model) must win over a platform override for the same alert, same
+    # precedence shape as the category-vs-platform test above.
+    monkeypatch.setattr(
+        score_module,
+        "load_model_tiers",
+        _stub_criteria({"claude_fable": {"protection_tier": "flagship", "velocity_threshold": 5.0}}),
+    )
+    settings = settings_factory(
+        velocity_threshold=10.0, velocity_threshold_overrides={"youtube": 500.0}
+    )
+    conn = _seeded_conn(settings)
+    # 40/hr: below the youtube platform override (500) but above the
+    # model override (5) -- must alert only because of the model override.
+    _insert_snapshot(conn, "t3_h", BASE, 10.0, poll_run_id="run-1", platform="youtube")
+    _insert_snapshot(conn, "t3_h", BASE + timedelta(hours=1), 50.0, poll_run_id="run-2", platform="youtube")
+    _insert_classification(conn, "t3_h", category="product_bug", model_implicated="claude_fable")
+    conn.close()
+
+    result = run_scoring(settings)
+
+    assert result.alerts_written == 1
+
+
+def test_category_velocity_threshold_override_wins_over_model_override(settings_factory, monkeypatch):
+    monkeypatch.setattr(
+        score_module,
+        "load_escalation_criteria",
+        _stub_criteria({"credential_theft": {"requires_qa": True, "velocity_threshold": 1.0}}),
+    )
+    monkeypatch.setattr(
+        score_module,
+        "load_model_tiers",
+        _stub_criteria({"claude_fable": {"protection_tier": "flagship", "velocity_threshold": 500.0}}),
+    )
+    settings = settings_factory(velocity_threshold=10.0)
+    conn = _seeded_conn(settings)
+    # 40/hr: below the model override (500) but above the category override
+    # (1) -- must alert only because of the category override winning.
+    _insert_snapshot(conn, "t3_i", BASE, 10.0, poll_run_id="run-1")
+    _insert_snapshot(conn, "t3_i", BASE + timedelta(hours=1), 50.0, poll_run_id="run-2")
+    _insert_classification(conn, "t3_i", category="credential_theft", model_implicated="claude_fable")
     conn.close()
 
     result = run_scoring(settings)
