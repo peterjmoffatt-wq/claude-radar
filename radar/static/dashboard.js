@@ -736,7 +736,8 @@
     const title = document.createElementNS(SVG_NS, "title");
     title.textContent =
       "Root-cause clusters with each member post colored by platform; solid and sized by " +
-      "velocity for scored alerts, hollow for classified posts not yet scored";
+      "velocity for scored alerts, hollow for classified posts not yet scored; alerts whose " +
+      "incident is still open (unacknowledged) flash a red ring";
     svg.appendChild(title);
 
     const edgeGroup = document.createElementNS(SVG_NS, "g");
@@ -842,6 +843,11 @@
         addRow("Severity", (SEVERITY_META[m.severity] || {}).label || m.severity);
         if (n.isAlert) {
           addRow("Velocity", m.velocity.toFixed(1));
+          addRow(
+            "Incident",
+            (INCIDENT_META[m.incident_status] || {}).label || m.incident_status,
+            m.incident_status === "open" ? "Flashing because nobody has acknowledged this yet." : undefined
+          );
         }
         addRow("Category", formatCategory(m.category));
         addRow("Matched term", m.matched_term);
@@ -1014,6 +1020,18 @@
         applyShapeGeometry(posterRing, nodeShape, n.r + 6);
         g.appendChild(posterRing);
         n.posterRingEl = posterRing;
+      }
+
+      // Flashes an alert that still needs a human to start on it -- see
+      // transition_incident() / INCIDENT_META in the Alerts tab. Drawn
+      // outside the risk/poster rings (r+9) so all three stay legible at
+      // once on a node that happens to be high-severity, same-poster-linked,
+      // AND still unaddressed.
+      if (n.type === "satellite" && n.isAlert && n.member.incident_status === "open") {
+        const needsActionRing = document.createElementNS(SVG_NS, nodeShape === "circle" ? "circle" : "rect");
+        needsActionRing.setAttribute("class", "node-needs-action-ring");
+        applyShapeGeometry(needsActionRing, nodeShape, n.r + 9);
+        g.appendChild(needsActionRing);
       }
 
       g.appendChild(fill);
@@ -1307,6 +1325,27 @@
       riskGroup.appendChild(item);
     });
     legendContainer.appendChild(riskGroup);
+
+    // A flashing outer ring on an alert whose incident is still "open" --
+    // nobody has acknowledged it yet. Its own group since it's a workflow
+    // signal (independent of severity/platform), not a content property.
+    const actionGroup = document.createElement("div");
+    actionGroup.className = "legend-group";
+    const actionGroupLabel = document.createElement("span");
+    actionGroupLabel.className = "legend-group-label";
+    actionGroupLabel.textContent = "Action:";
+    actionGroup.appendChild(actionGroupLabel);
+
+    const actionItem = document.createElement("span");
+    actionItem.className = "legend-item";
+    const actionSwatch = document.createElement("span");
+    actionSwatch.className = "legend-swatch legend-swatch--hollow legend-swatch--needs-action";
+    const actionText = document.createElement("span");
+    actionText.textContent = "Needs addressing (open incident)";
+    actionItem.appendChild(actionSwatch);
+    actionItem.appendChild(actionText);
+    actionGroup.appendChild(actionItem);
+    legendContainer.appendChild(actionGroup);
   }
 
   // -- sortable-table helpers (shared by Watching and Alerts) -----------------

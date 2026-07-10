@@ -800,6 +800,49 @@ button.run-collection:disabled {
   opacity: 0.8;
 }
 
+/* Flags an alert whose incident_status is still "open" -- nobody has
+   acknowledged or started working it yet. Animated (unlike the static risk
+   ring) since this is a workflow-state signal ("still needs a human"), not a
+   content property, and needs to catch the eye even at a glance across the
+   whole graph. Dashed + pulsing stroke-width (not just opacity) so it reads
+   as a distinct, kinetic ring rather than blending into a same-colored
+   *static* high-severity risk ring on a node that happens to be both. */
+@keyframes needs-action-flash {
+  0%,
+  100% {
+    opacity: 1;
+    stroke-width: 2px;
+  }
+  50% {
+    opacity: 0.1;
+    stroke-width: 4px;
+  }
+}
+
+.node-needs-action-ring {
+  fill: none;
+  pointer-events: none;
+  stroke: var(--status-critical);
+  stroke-width: 2px;
+  stroke-dasharray: 4 3;
+  animation: needs-action-flash 1s ease-in-out infinite;
+}
+
+.legend-swatch--needs-action {
+  border-color: var(--status-critical);
+  border-style: dashed;
+  border-width: 2px;
+  animation: needs-action-flash 1s ease-in-out infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .node-needs-action-ring,
+  .legend-swatch--needs-action {
+    animation: none;
+    opacity: 1;
+  }
+}
+
 /* -- filters -- */
 
 .filters {
