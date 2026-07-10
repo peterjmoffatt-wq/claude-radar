@@ -27,7 +27,9 @@
       <div class="footprint-filters">
         <div id="footprint-platform-filter" class="footprint-filter-group"></div>
         <div id="footprint-category-filter" class="footprint-filter-group"></div>
+        <div id="footprint-model-filter" class="footprint-filter-group"></div>
         <div id="footprint-client-filter" class="footprint-filter-group" hidden></div>
+        <div id="footprint-status-filter" class="footprint-filter-group"></div>
       </div>
       <div class="footprint-layout">
         <div id="footprint-graph"><p class="empty-state">Loading…</p></div>
@@ -181,6 +183,17 @@
           <option value="github">GitHub</option>
           <option value="x">X</option>
           <option value="mastodon">Mastodon</option>
+        </select>
+      </label>
+      <label>Incident
+        <select id="filter-incident">
+          <option value="">All</option>
+          <option value="open">Open</option>
+          <option value="acknowledged">Acknowledged</option>
+          <option value="mitigating">Mitigating</option>
+          <option value="resolved">Resolved</option>
+          <option value="archived">Archived (resolved 24h+)</option>
+          <option value="false_positive">False positive</option>
         </select>
       </label>
       <label>Claiming as

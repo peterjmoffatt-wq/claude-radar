@@ -541,6 +541,23 @@ button.run-collection:disabled {
   color: #fff;
 }
 
+/* Deliberately plainer than the chips above -- a bulk action, not a
+   filter state, so it shouldn't compete visually with what's on/off. */
+.filter-bulk-btn {
+  font: inherit;
+  font-size: 11px;
+  padding: 2px 6px;
+  border: none;
+  background: none;
+  color: var(--text-muted);
+  text-decoration: underline;
+  cursor: pointer;
+}
+
+.filter-bulk-btn:hover {
+  color: var(--text-primary);
+}
+
 /* -- footprint graph -- */
 
 .footprint-layout {
@@ -806,6 +823,26 @@ button.run-collection:disabled {
 
 .graph-node.is-dragging .node-fill {
   stroke: var(--series-1);
+}
+
+/* The "+N more" cap indicator -- deliberately muted/dashed so it never reads
+   as a real post competing with the platform-colored satellite dots. */
+.overflow-fill {
+  fill: none;
+  stroke: var(--text-muted);
+  stroke-width: 1.5;
+  stroke-dasharray: 2 2;
+}
+
+.graph-node--overflow.is-dragging .overflow-fill {
+  stroke: var(--series-1);
+}
+
+.overflow-label {
+  fill: var(--text-muted);
+  font-size: 9px;
+  pointer-events: none;
+  user-select: none;
 }
 
 .node-risk-ring {
@@ -1347,6 +1384,23 @@ tbody tr {
   margin-bottom: 8px;
   text-transform: uppercase;
   letter-spacing: 0.02em;
+}
+
+.board-archived-link {
+  font: inherit;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.02em;
+  border: none;
+  background: none;
+  padding: 0;
+  color: var(--series-1);
+  text-decoration: underline;
+  cursor: pointer;
+}
+
+.board-archived-link:hover {
+  color: var(--text-primary);
 }
 
 .board-column-cards {

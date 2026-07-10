@@ -441,8 +441,14 @@
         const distSq = Math.max(dx * dx + dy * dy, 1);
         const dist = Math.sqrt(distSq);
         // Scaled by combined radius so bigger circles (hubs, high-velocity
-        // satellites) command proportionally more personal space.
-        const force = (repulsionStrength * (na.r + nb.r)) / distSq;
+        // satellites) command proportionally more personal space. Two hubs
+        // get an extra boost on top of that -- ordinary repulsion alone
+        // wasn't enough to keep 30+ of them from overlapping each other
+        // (measured: hub centers as close as 32px apart with 44px of
+        // combined radius), which is what actually read as "tangled," more
+        // than any single cluster's own satellite spacing.
+        const hubBoost = na.type === "hub" && nb.type === "hub" ? 5 : 1;
+        const force = (repulsionStrength * hubBoost * (na.r + nb.r)) / distSq;
         const fx = (dx / dist) * force;
         const fy = (dy / dist) * force;
         na.vx += fx;
@@ -500,7 +506,18 @@
   // null = show everything; a Set means "only these are visible."
   let footprintPlatformFilter = null;
   let footprintCategoryFilter = null;
+  let footprintModelFilter = null;
   let footprintClientFilter = null;
+  let footprintStatusFilter = null;
+  // Plain boolean, not a Set like the others -- "claimed" only has two states
+  // and only ever applies to alerts (watching posts have no claimed_by), so
+  // there's no "isolate one of several values" case to support.
+  let footprintClaimedOnly = false;
+
+  const STATUS_FILTER_VALUES = [
+    { value: "alert", label: "Alert" },
+    { value: "watching", label: "Watching" },
+  ];
 
   const ALL_CATEGORIES = [
     "api_abuse",
@@ -543,11 +560,35 @@
       ];
       renderFootprintPlatformFilter();
       renderFootprintCategoryFilter();
+      renderFootprintModelFilter();
       renderFootprintClientFilter();
+      renderFootprintStatusFilter();
       applyFootprintFilters();
     } catch (err) {
       renderEmpty(container, "Failed to load the footprint graph.");
     }
+  }
+
+  // Shared by every footprint filter group below -- "None" is what actually
+  // saves the "deselect everything but one" clicking a user complained about:
+  // it's a legal state (an empty Set, not null) that applyFootprintFilters()
+  // already treats as "show nothing," so isolating one item is just
+  // None + toggle that one back on, not N individual clicks.
+  function appendFilterBulkButtons(container, onSetFilter) {
+    const allBtn = document.createElement("button");
+    allBtn.type = "button";
+    allBtn.className = "filter-bulk-btn";
+    allBtn.textContent = "All";
+    allBtn.addEventListener("click", () => onSetFilter(null));
+
+    const noneBtn = document.createElement("button");
+    noneBtn.type = "button";
+    noneBtn.className = "filter-bulk-btn";
+    noneBtn.textContent = "None";
+    noneBtn.addEventListener("click", () => onSetFilter(new Set()));
+
+    container.appendChild(allBtn);
+    container.appendChild(noneBtn);
   }
 
   function renderFootprintCategoryFilter() {
@@ -557,6 +598,11 @@
     label.className = "legend-group-label";
     label.textContent = "Category:";
     container.appendChild(label);
+    appendFilterBulkButtons(container, (value) => {
+      footprintCategoryFilter = value;
+      renderFootprintCategoryFilter();
+      applyFootprintFilters();
+    });
     const categoriesPresent = ALL_CATEGORIES.filter((cat) =>
       footprintAllMembers.some((m) => m.category === cat)
     );
@@ -616,6 +662,11 @@
     label.className = "legend-group-label";
     label.textContent = "Client:";
     container.appendChild(label);
+    appendFilterBulkButtons(container, (value) => {
+      footprintClientFilter = value;
+      renderFootprintClientFilter();
+      applyFootprintFilters();
+    });
     clientsPresent.forEach((clientName) => {
       const chip = document.createElement("button");
       chip.type = "button";
@@ -649,6 +700,126 @@
     });
   }
 
+  // Alert vs. Watching (has this post crossed the velocity threshold / been
+  // manually escalated, or not yet) plus a "claimed" refinement scoped to
+  // alerts only -- workflow state, as opposed to the content filters above
+  // (platform/category/model/client), so it's grouped separately.
+  function renderFootprintStatusFilter() {
+    const container = document.getElementById("footprint-status-filter");
+    container.textContent = "";
+    const label = document.createElement("span");
+    label.className = "legend-group-label";
+    label.textContent = "Status:";
+    container.appendChild(label);
+    appendFilterBulkButtons(container, (value) => {
+      footprintStatusFilter = value;
+      renderFootprintStatusFilter();
+      applyFootprintFilters();
+    });
+    STATUS_FILTER_VALUES.forEach(({ value, label: chipLabel }) => {
+      const chip = document.createElement("button");
+      chip.type = "button";
+      chip.className = "category-filter-chip";
+      const isActive = !footprintStatusFilter || footprintStatusFilter.has(value);
+      chip.classList.toggle("is-active", isActive);
+      chip.textContent = chipLabel;
+      chip.addEventListener("click", () => {
+        if (!footprintStatusFilter) {
+          footprintStatusFilter = new Set(STATUS_FILTER_VALUES.map((s) => s.value));
+        }
+        if (footprintStatusFilter.has(value)) {
+          footprintStatusFilter.delete(value);
+        } else {
+          footprintStatusFilter.add(value);
+        }
+        if (footprintStatusFilter.size === STATUS_FILTER_VALUES.length) {
+          footprintStatusFilter = null;
+        }
+        renderFootprintStatusFilter();
+        applyFootprintFilters();
+      });
+      chip.title = `Isolate ${chipLabel}: double-click`;
+      chip.addEventListener("dblclick", (evt) => {
+        evt.preventDefault();
+        footprintStatusFilter = new Set([value]);
+        renderFootprintStatusFilter();
+        applyFootprintFilters();
+      });
+      container.appendChild(chip);
+    });
+
+    // Claimed = on somebody's personal Board -- only ever true for alerts,
+    // so this narrows within whatever the Alert/Watching chips above already
+    // allow through rather than needing its own status-like value.
+    const claimedItem = document.createElement("label");
+    claimedItem.className =
+      "legend-item legend-item--toggle" + (footprintClaimedOnly ? "" : " legend-item--inactive");
+    const claimedCheckbox = document.createElement("input");
+    claimedCheckbox.type = "checkbox";
+    claimedCheckbox.className = "legend-checkbox";
+    claimedCheckbox.checked = footprintClaimedOnly;
+    claimedCheckbox.addEventListener("change", () => {
+      footprintClaimedOnly = claimedCheckbox.checked;
+      renderFootprintStatusFilter();
+      applyFootprintFilters();
+    });
+    claimedItem.appendChild(claimedCheckbox);
+    claimedItem.appendChild(document.createTextNode("On a Board (claimed) only"));
+    container.appendChild(claimedItem);
+  }
+
+  // A cluster is category x model (see clusterKeyFor()) -- category already
+  // had its own filter, this is the other half, so narrowing both together
+  // is how you isolate one specific cluster without a 30+-chip "cluster"
+  // filter of every combination that happens to exist in the current data.
+  function renderFootprintModelFilter() {
+    const container = document.getElementById("footprint-model-filter");
+    container.textContent = "";
+    const label = document.createElement("span");
+    label.className = "legend-group-label";
+    label.textContent = "Model:";
+    container.appendChild(label);
+    appendFilterBulkButtons(container, (value) => {
+      footprintModelFilter = value;
+      renderFootprintModelFilter();
+      applyFootprintFilters();
+    });
+    const modelsPresent = ALL_MODELS.filter((model) =>
+      footprintAllMembers.some((m) => m.model_implicated === model)
+    );
+    modelsPresent.forEach((model) => {
+      const chip = document.createElement("button");
+      chip.type = "button";
+      chip.className = "category-filter-chip";
+      const isActive = !footprintModelFilter || footprintModelFilter.has(model);
+      chip.classList.toggle("is-active", isActive);
+      chip.textContent = formatCategory(model);
+      chip.addEventListener("click", () => {
+        if (!footprintModelFilter) {
+          footprintModelFilter = new Set(modelsPresent);
+        }
+        if (footprintModelFilter.has(model)) {
+          footprintModelFilter.delete(model);
+        } else {
+          footprintModelFilter.add(model);
+        }
+        if (footprintModelFilter.size === modelsPresent.length) {
+          footprintModelFilter = null;
+        }
+        renderFootprintModelFilter();
+        applyFootprintFilters();
+      });
+      chip.title = `Isolate ${formatCategory(model)}: double-click`;
+      chip.addEventListener("dblclick", (evt) => {
+        evt.preventDefault();
+        footprintModelFilter = new Set([model]);
+        renderFootprintModelFilter();
+        applyFootprintFilters();
+      });
+      container.appendChild(chip);
+    });
+  }
+
   // Lives in the filter row above the graph (not the legend below it) --
   // it's an interactive control, not a color key, so it belongs with the
   // category chips rather than split across both ends of the card.
@@ -659,6 +830,11 @@
     label.className = "legend-group-label";
     label.textContent = "Platform:";
     container.appendChild(label);
+    appendFilterBulkButtons(container, (value) => {
+      footprintPlatformFilter = value;
+      renderFootprintPlatformFilter();
+      applyFootprintFilters();
+    });
 
     // Enumerated from the *full* unfiltered set, not whatever's currently
     // visible -- otherwise toggling a platform off would make its own
@@ -727,10 +903,36 @@
     const filtered = footprintAllMembers.filter((m) => {
       if (footprintPlatformFilter && !footprintPlatformFilter.has(m.platform)) return false;
       if (footprintCategoryFilter && !footprintCategoryFilter.has(m.category)) return false;
+      if (footprintModelFilter && !footprintModelFilter.has(m.model_implicated)) return false;
       if (footprintClientFilter && !footprintClientFilter.has(m.client)) return false;
+      if (footprintStatusFilter && !footprintStatusFilter.has(m.status)) return false;
+      if (footprintClaimedOnly && !m.claimed_by) return false;
       return true;
     });
     renderFootprintGraph(container, legend, filtered);
+  }
+
+  // A cluster's real membership can run into the hundreds -- rendering every
+  // single one as its own node stops being legible (dozens of dots crammed
+  // around one hub) and stops being fast (the force simulation below is
+  // O(n^2) in total node count). Past this many, the rest fold into one
+  // overflow node instead of getting their own dot; hub.memberCount still
+  // reflects the true total, so nothing is hidden from the stats, only from
+  // having individual geometry.
+  const MAX_SATELLITES_PER_HUB = 8;
+
+  // Real, scored alerts before Watching-only (not yet scored) -- alerts are
+  // the more operationally significant signal; within a tier, higher
+  // severity first, then most recent. So when a cluster is capped, the posts
+  // that keep their own dot are the ones most worth seeing, not an arbitrary
+  // slice.
+  function compareSatellitePriority(a, b) {
+    const statusA = a.status === "alert" ? 0 : 1;
+    const statusB = b.status === "alert" ? 0 : 1;
+    if (statusA !== statusB) return statusA - statusB;
+    const sevDiff = (SEVERITY_RANK[b.severity] || 0) - (SEVERITY_RANK[a.severity] || 0);
+    if (sevDiff !== 0) return sevDiff;
+    return (b.created_at || "").localeCompare(a.created_at || "");
   }
 
   function renderFootprintGraph(container, legendContainer, members) {
@@ -749,7 +951,6 @@
     }
 
     const width = Math.max(container.clientWidth || 900, 300);
-    const height = 920;
 
     const clusters = new Map();
     members.forEach((m) => {
@@ -760,6 +961,15 @@
       clusters.get(key).members.push(m);
     });
     const clusterList = Array.from(clusters.values());
+
+    // A fixed canvas fit fine at a handful of hubs; past a few dozen there's
+    // no amount of repulsion that spreads them out inside the same fixed
+    // area without eventually forcing overlap somewhere -- taller (not
+    // wider -- the container scrolls vertically, and width is real
+    // viewport space that isn't there to give) is the actual fix. #footprint-graph
+    // already scrolls, so this trades more scrolling for zero overlap
+    // instead of the reverse.
+    const height = Math.max(920, clusterList.length * 45);
 
     const nodes = [];
     const edges = [];
@@ -781,8 +991,20 @@
       };
       nodes.push(hub);
 
-      cluster.members.forEach((member, mi) => {
-        const spread = (mi - (cluster.members.length - 1) / 2) * 0.35;
+      // The cap exists to keep many hubs simultaneously legible -- once
+      // filters (or clicking an overflow node) have narrowed the view down
+      // to a single cluster, that reason is gone, and a cap that still hid
+      // posts would make "isolate this cluster" a lie: clicking "+7 more"
+      // should show those 7, not just shrink which ones stay hidden.
+      const cap = clusterList.length === 1 ? Infinity : MAX_SATELLITES_PER_HUB;
+      const shown = cluster.members.slice().sort(compareSatellitePriority).slice(0, cap);
+      const hiddenCount = cluster.members.length - shown.length;
+      // +1 slot reserved for the overflow node below, so its spread angle
+      // continues the same fan rather than landing back on top of the hub.
+      const spreadCount = shown.length + (hiddenCount > 0 ? 1 : 0);
+
+      shown.forEach((member, mi) => {
+        const spread = (mi - (spreadCount - 1) / 2) * 0.35;
         const isAlert = member.status === "alert";
         const satellite = {
           type: "satellite",
@@ -797,6 +1019,25 @@
         nodes.push(satellite);
         edges.push({ source: hub, target: satellite });
       });
+
+      if (hiddenCount > 0) {
+        const spread = (shown.length - (spreadCount - 1) / 2) * 0.35;
+        const [clusterCategory, clusterModel] = cluster.key.split(":");
+        const overflow = {
+          type: "overflow",
+          hubLabel: cluster.label,
+          hiddenCount,
+          category: clusterCategory,
+          model: clusterModel,
+          r: 9,
+          x: hub.x + Math.cos(angle + spread) * 60,
+          y: hub.y + Math.sin(angle + spread) * 60,
+          vx: 0,
+          vy: 0,
+        };
+        nodes.push(overflow);
+        edges.push({ source: hub, target: overflow });
+      }
     });
 
     const svg = document.createElementNS(SVG_NS, "svg");
@@ -1067,13 +1308,20 @@
 
     const nodeEls = nodes.map((n) => {
       const g = document.createElementNS(SVG_NS, "g");
-      g.setAttribute("class", n.type === "hub" ? "graph-hub" : "graph-node");
+      g.setAttribute(
+        "class",
+        n.type === "hub" ? "graph-hub" : n.type === "overflow" ? "graph-node graph-node--overflow" : "graph-node"
+      );
 
       const nodeShape = n.type === "satellite" ? PLATFORM_SHAPE[n.member.platform] || "circle" : "circle";
       const fill = document.createElementNS(SVG_NS, nodeShape === "circle" ? "circle" : "rect");
       fill.setAttribute(
         "class",
-        n.type === "hub" ? "hub-fill" + (n.alertCount > 0 ? " hub-fill--has-alert" : "") : "node-fill"
+        n.type === "hub"
+          ? "hub-fill" + (n.alertCount > 0 ? " hub-fill--has-alert" : "")
+          : n.type === "overflow"
+            ? "overflow-fill"
+            : "node-fill"
       );
       applyShapeGeometry(fill, nodeShape, n.r);
       if (n.type === "satellite") {
@@ -1152,6 +1400,11 @@
                 : "No active alerts yet",
             ],
           ]);
+        } else if (n.type === "overflow") {
+          showTooltipForElement(g, [
+            ["More in this cluster", `+${n.hiddenCount} not shown individually`],
+            ["Click", "isolate this cluster"],
+          ]);
         } else {
           const m = n.member;
           const lines = [
@@ -1208,7 +1461,19 @@
         if (!drag) return;
         g.classList.remove("is-dragging");
         if (!drag.moved) {
-          renderDetail(n);
+          if (n.type === "overflow") {
+            // A click, not the hover tooltip, is the "commit to this" action
+            // -- narrows both filters that define this cluster (category x
+            // model) so the graph re-renders showing just it, same as
+            // double-clicking both chips individually would.
+            footprintCategoryFilter = new Set([n.category]);
+            footprintModelFilter = new Set([n.model]);
+            renderFootprintCategoryFilter();
+            renderFootprintModelFilter();
+            applyFootprintFilters();
+          } else {
+            renderDetail(n);
+          }
         }
         drag = null;
       };
@@ -1222,6 +1487,18 @@
         label.textContent = n.label;
         g.appendChild(label);
         n.labelEl = label;
+      } else if (n.type === "overflow") {
+        // Static, not run through separateLabels() below (that's scoped to
+        // hub-label collisions) -- overflow nodes are small and sparse
+        // enough that a fixed offset reads fine without it, and "+N" needs
+        // to be visible without hovering so the cap doesn't look like data
+        // silently vanished.
+        const label = document.createElementNS(SVG_NS, "text");
+        label.setAttribute("class", "overflow-label");
+        label.setAttribute("x", n.r + 4);
+        label.setAttribute("dominant-baseline", "middle");
+        label.textContent = `+${n.hiddenCount}`;
+        g.appendChild(label);
       }
 
       nodeGroup.appendChild(g);
@@ -1704,16 +1981,26 @@
       category: document.getElementById("filter-category").value,
       severity: document.getElementById("filter-severity").value,
       platform: document.getElementById("filter-alerts-platform").value,
+      incident: document.getElementById("filter-incident").value,
     };
   }
 
   // Category/severity are server-side filters (existing /api/alerts params);
-  // platform is applied client-side against the fetched set below, alongside
-  // sorting, without needing a new server-side query param.
+  // platform/incident are applied client-side against the fetched set below,
+  // alongside sorting, without needing new server-side query params.
   function applyAlertsView() {
     const tbody = document.getElementById("alerts-body");
-    const { platform } = currentFilters();
+    const { platform, incident } = currentFilters();
     let rows = platform ? alertsAllRows.filter((a) => a.platform === platform) : alertsAllRows;
+    if (incident === "archived") {
+      // Same 24h-since-resolved threshold as the Board's own archiving
+      // (isArchivedResolved(), below) -- the whole point of this filter
+      // value is finding exactly what fell off the Board, so it has to use
+      // the identical rule the Board used to hide it.
+      rows = rows.filter((a) => a.incident_status === "resolved" && isArchivedResolved(a));
+    } else if (incident) {
+      rows = rows.filter((a) => a.incident_status === incident);
+    }
     rows = applySort(rows, alertsSort, ALERTS_SORT_ACCESSORS);
     renderAlerts(tbody, rows);
     // The Board tab is a PM's personal workspace, scoped to what they've
@@ -2415,8 +2702,9 @@
 
   // A resolved card falls off the board 24h after its most recent move into
   // Resolved -- keeps the board focused on what's still active. Nothing is
-  // deleted: the Table view (and the status filter) still shows every alert
-  // regardless of age, so this is purely a Board-view declutter.
+  // deleted: the Alerts tab's own Incident filter has an "Archived" option
+  // using this exact threshold, so this is purely a Board-view declutter,
+  // not a data-visibility change.
   const RESOLVED_ARCHIVE_MS = 24 * 60 * 60 * 1000;
 
   function isArchivedResolved(alert) {
@@ -2441,8 +2729,27 @@
       const header = document.createElement("div");
       header.className = "board-column-header";
       const meta = INCIDENT_META[status] || { label: status };
-      header.textContent = `${meta.label} (${columnAlerts.length})`;
-      if (archivedCount > 0) header.textContent += ` · ${archivedCount} archived`;
+      header.appendChild(document.createTextNode(`${meta.label} (${columnAlerts.length})`));
+      if (archivedCount > 0) {
+        // Resolved cards falling off the Board is easy to mistake for the
+        // post having vanished entirely -- this is the fix for that: a
+        // direct path from "where did it go" to seeing it, not just a count
+        // that confirms it's somewhere.
+        const archivedLink = document.createElement("button");
+        archivedLink.type = "button";
+        archivedLink.className = "board-archived-link";
+        archivedLink.textContent = ` · ${archivedCount} archived`;
+        archivedLink.title = "View archived (resolved 24h+) alerts on the Alerts tab";
+        archivedLink.addEventListener("click", () => {
+          document.getElementById("filter-category").value = "";
+          document.getElementById("filter-severity").value = "";
+          document.getElementById("filter-alerts-platform").value = "";
+          document.getElementById("filter-incident").value = "archived";
+          activateTab("alerts");
+          loadAlerts();
+        });
+        header.appendChild(archivedLink);
+      }
       column.appendChild(header);
 
       const cardsContainer = document.createElement("div");
@@ -2540,6 +2847,7 @@
       document.getElementById("filter-category").value = "";
       document.getElementById("filter-severity").value = "";
       document.getElementById("filter-alerts-platform").value = "";
+      document.getElementById("filter-incident").value = "";
       applyAlertsView();
     }
     activateTab(tab);
@@ -3264,6 +3572,7 @@
   document.getElementById("filter-category").addEventListener("change", loadAlerts);
   document.getElementById("filter-severity").addEventListener("change", loadAlerts);
   document.getElementById("filter-alerts-platform").addEventListener("change", applyAlertsView);
+  document.getElementById("filter-incident").addEventListener("change", applyAlertsView);
 
   document.getElementById("filter-watching-platform").addEventListener("change", applyWatchingView);
   document.getElementById("filter-watching-category").addEventListener("change", applyWatchingView);
