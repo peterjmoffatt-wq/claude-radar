@@ -1,15 +1,27 @@
 # The tuned watchlist. Easy to add/edit/re-run -- see README for `radar tune` (Phase 2+).
 subreddits:
-  - ClaudeAI
-  - Anthropic
-  - LocalLLaMA
-
+- ClaudeAI
+- Anthropic
+- LocalLLaMA
 terms:
-  - "Claude API"
-  - "Claude Code"
-  - "claude rate limit"
-  - "claude down"
-  - "claude outage"
-  - "claude refuses"
-  - "anthropic api key"
-  - "claude vs gpt"
+- Claude API
+- Claude Code
+- claude rate limit
+- claude down
+- claude outage
+- claude refuses
+- anthropic api key
+- claude vs gpt
+- Fable distillation
+- Opus distillation
+clients: []
+risk_patterns:
+- jailbreak
+- prompt injection
+- credential leak
+- api key leak
+- token theft
+- code execution exploit
+- system prompt leak
+- data exfiltration
+- distillation

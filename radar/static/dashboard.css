@@ -1266,15 +1266,15 @@ tbody tr {
   font-variant-numeric: tabular-nums;
 }
 
-/* -- Alerts tab: Table/Board toggle + Kanban board -- */
+/* -- sub-tab strip (Settings' Sources/Watchlist/Escalation/Model protection) -- */
 
-.view-toggle {
+.subtabs {
   display: flex;
   gap: 2px;
-  margin-left: auto;
+  margin-bottom: 16px;
 }
 
-.view-toggle-btn {
+.subtab-button {
   font: inherit;
   font-size: 12px;
   font-weight: 600;
@@ -1285,16 +1285,16 @@ tbody tr {
   cursor: pointer;
 }
 
-.view-toggle-btn:first-child {
+.subtab-button:first-child {
   border-radius: 6px 0 0 6px;
 }
 
-.view-toggle-btn:last-child {
+.subtab-button:last-child {
   border-radius: 0 6px 6px 0;
   border-left: none;
 }
 
-.view-toggle-btn.is-active {
+.subtab-button.is-active {
   background: var(--series-1);
   border-color: var(--series-1);
   color: #fff;

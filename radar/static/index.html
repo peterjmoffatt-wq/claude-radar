@@ -248,87 +248,102 @@
   </section>
 
   <section id="tab-settings" class="tab-panel" role="tabpanel" data-tab="settings" hidden>
-    <div class="card source-picker">
-      <h2>Sources</h2>
-      <p class="source-picker-caption">
-        Choose which platforms to search, then run a live collection pass. Platforms without
-        credentials configured in <code>.env</code> are skipped, not failed. In production this
-        runs on a schedule (e.g. a cron/systemd timer calling <code>radar collect</code>) rather
-        than a manual click -- this button is the same operation, triggered on demand.
-      </p>
-      <div id="source-checkboxes" class="source-checkboxes"><p class="empty-state">Loading…</p></div>
-      <div class="source-picker-actions">
-        <button type="button" id="run-collection-btn" class="run-collection">Run collection</button>
-        <span id="collection-status" class="collection-status" role="status"></span>
+    <nav class="subtabs" role="tablist" aria-label="Settings sections">
+      <button type="button" class="subtab-button is-active" data-subtab="sources" role="tab" aria-selected="true">Sources</button>
+      <button type="button" class="subtab-button" data-subtab="watchlist" role="tab" aria-selected="false">Watchlist</button>
+      <button type="button" class="subtab-button" data-subtab="escalation" role="tab" aria-selected="false">Escalation criteria</button>
+      <button type="button" class="subtab-button" data-subtab="models" role="tab" aria-selected="false">Model protection</button>
+    </nav>
+
+    <div class="subtab-panel" data-subtab="sources">
+      <div class="card source-picker">
+        <h2>Sources</h2>
+        <p class="source-picker-caption">
+          Choose which platforms to search, then run a live collection pass. Platforms without
+          credentials configured in <code>.env</code> are skipped, not failed. In production this
+          runs on a schedule (e.g. a cron/systemd timer calling <code>radar collect</code>) rather
+          than a manual click -- this button is the same operation, triggered on demand.
+        </p>
+        <div id="source-checkboxes" class="source-checkboxes"><p class="empty-state">Loading…</p></div>
+        <div class="source-picker-actions">
+          <button type="button" id="run-collection-btn" class="run-collection">Run collection</button>
+          <span id="collection-status" class="collection-status" role="status"></span>
+        </div>
       </div>
     </div>
 
-    <div class="card">
-      <h2>Search terms</h2>
-      <p class="source-picker-caption">Generic watchlist terms, searched across every configured source.</p>
-      <div id="terms-chip-list"></div>
-    </div>
-
-    <div class="card">
-      <h2>Watched clients</h2>
-      <p class="source-picker-caption">
-        Enterprise/client names whose Claude-powered products you want watched for targeted
-        attacks -- each one gets automatically crossed with every risk pattern below, so you
-        don't have to type every combination by hand (e.g. a "McDonald's"-style AI chatbot
-        incident: prompt injection leading to credential/token theft).
-      </p>
-      <div id="clients-chip-list"></div>
-    </div>
-
-    <div class="card">
-      <h2>Risk patterns</h2>
-      <p class="source-picker-caption">
-        Attack-pattern phrases crossed with each watched client above. Edit this list to tune
-        what "targeted" means for your threat model.
-      </p>
-      <div id="risk-patterns-chip-list"></div>
-    </div>
-
-    <div class="card">
-      <div class="settings-save-row">
-        <button type="button" id="save-watchlist-btn">Save watchlist</button>
-        <span id="watchlist-status" class="collection-status" role="status"></span>
+    <div class="subtab-panel" data-subtab="watchlist" hidden>
+      <div class="card">
+        <h2>Search terms</h2>
+        <p class="source-picker-caption">Generic watchlist terms, searched across every configured source.</p>
+        <div id="terms-chip-list"></div>
       </div>
-      <h2>Effective query preview</h2>
-      <p class="source-picker-caption">
-        What a collection run will actually search -- generic terms plus every client × risk
-        pattern combination. Updates live as you edit above, before you save.
-      </p>
-      <div id="effective-terms-preview" class="effective-terms-preview"></div>
-    </div>
 
-    <div class="card">
-      <h2>Escalation criteria</h2>
-      <p class="source-picker-caption">
-        Per-category: whether it requires human QA before an alert is trusted, an optional
-        velocity-threshold override (blank = use the platform/global default), and a
-        first-response playbook. Changes here affect the next <code>radar score</code> run,
-        CLI or dashboard-triggered.
-      </p>
-      <div id="escalation-criteria-list"><p class="empty-state">Loading…</p></div>
-      <div class="settings-save-row">
-        <button type="button" id="save-escalation-criteria-btn">Save escalation criteria</button>
-        <span id="escalation-criteria-status" class="collection-status" role="status"></span>
+      <div class="card">
+        <h2>Watched clients</h2>
+        <p class="source-picker-caption">
+          Enterprise/client names whose Claude-powered products you want watched for targeted
+          attacks -- each one gets automatically crossed with every risk pattern below, so you
+          don't have to type every combination by hand (e.g. a "McDonald's"-style AI chatbot
+          incident: prompt injection leading to credential/token theft).
+        </p>
+        <div id="clients-chip-list"></div>
+      </div>
+
+      <div class="card">
+        <h2>Risk patterns</h2>
+        <p class="source-picker-caption">
+          Attack-pattern phrases crossed with each watched client above. Edit this list to tune
+          what "targeted" means for your threat model.
+        </p>
+        <div id="risk-patterns-chip-list"></div>
+      </div>
+
+      <div class="card">
+        <div class="settings-save-row">
+          <button type="button" id="save-watchlist-btn">Save watchlist</button>
+          <span id="watchlist-status" class="collection-status" role="status"></span>
+        </div>
+        <h2>Effective query preview</h2>
+        <p class="source-picker-caption">
+          What a collection run will actually search -- generic terms plus every client × risk
+          pattern combination. Updates live as you edit above, before you save.
+        </p>
+        <div id="effective-terms-preview" class="effective-terms-preview"></div>
       </div>
     </div>
 
-    <div class="card">
-      <h2>Model protection</h2>
-      <p class="source-picker-caption">
-        Per model: how much a leak/incident on it matters -- a flagship-model incident isn't the
-        same story as one on a small/cheap model -- plus an optional velocity-threshold override
-        (blank = use the category/platform/global default). Flagship-tier root causes are flagged
-        in the footprint graph's hub detail panel and the Home tab's Root-cause clusters chart.
-      </p>
-      <div id="model-tiers-list"><p class="empty-state">Loading…</p></div>
-      <div class="settings-save-row">
-        <button type="button" id="save-model-tiers-btn">Save model protection</button>
-        <span id="model-tiers-status" class="collection-status" role="status"></span>
+    <div class="subtab-panel" data-subtab="escalation" hidden>
+      <div class="card">
+        <h2>Escalation criteria</h2>
+        <p class="source-picker-caption">
+          Per-category: whether it requires human QA before an alert is trusted, an optional
+          velocity-threshold override (blank = use the platform/global default), and a
+          first-response playbook. Changes here affect the next <code>radar score</code> run,
+          CLI or dashboard-triggered.
+        </p>
+        <div id="escalation-criteria-list"><p class="empty-state">Loading…</p></div>
+        <div class="settings-save-row">
+          <button type="button" id="save-escalation-criteria-btn">Save escalation criteria</button>
+          <span id="escalation-criteria-status" class="collection-status" role="status"></span>
+        </div>
+      </div>
+    </div>
+
+    <div class="subtab-panel" data-subtab="models" hidden>
+      <div class="card">
+        <h2>Model protection</h2>
+        <p class="source-picker-caption">
+          Per model: how much a leak/incident on it matters -- a flagship-model incident isn't the
+          same story as one on a small/cheap model -- plus an optional velocity-threshold override
+          (blank = use the category/platform/global default). Flagship-tier root causes are flagged
+          in the footprint graph's hub detail panel and the Home tab's Root-cause clusters chart.
+        </p>
+        <div id="model-tiers-list"><p class="empty-state">Loading…</p></div>
+        <div class="settings-save-row">
+          <button type="button" id="save-model-tiers-btn">Save model protection</button>
+          <span id="model-tiers-status" class="collection-status" role="status"></span>
+        </div>
       </div>
     </div>
   </section>

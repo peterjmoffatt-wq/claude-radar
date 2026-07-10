@@ -2492,6 +2492,29 @@
     });
   }
 
+  // Settings' own sub-tabs (Sources/Watchlist/Escalation criteria/Model
+  // protection) -- exact mirror of activateTab()/initTabs() above, but
+  // namespaced to .subtab-button/.subtab-panel/data-subtab so it doesn't
+  // collide with the top-level tab logic (which would otherwise hide every
+  // sub-panel -- none of them have data-tab="settings" -- the moment
+  // Settings itself is activated).
+  function activateSettingsSubtab(target) {
+    document.querySelectorAll(".subtab-button").forEach((b) => {
+      const active = b.dataset.subtab === target;
+      b.classList.toggle("is-active", active);
+      b.setAttribute("aria-selected", String(active));
+    });
+    document.querySelectorAll(".subtab-panel").forEach((panel) => {
+      panel.hidden = panel.dataset.subtab !== target;
+    });
+  }
+
+  function initSettingsSubtabs() {
+    document.querySelectorAll(".subtab-button").forEach((button) => {
+      button.addEventListener("click", () => activateSettingsSubtab(button.dataset.subtab));
+    });
+  }
+
   // Jumps to a post's row inside the Watching or Alerts tab -- used by the
   // footprint graph's detail panel so a node click can lead to the same
   // post's full row context (filters, poster, actions) instead of just the
@@ -3086,6 +3109,7 @@
   // -- init -------------------------------------------------------------------
 
   initTabs();
+  initSettingsSubtabs();
   initSourcePicker();
   initSettingsTab();
   initEscalationCriteriaTab();
