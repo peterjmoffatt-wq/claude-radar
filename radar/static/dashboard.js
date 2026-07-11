@@ -935,6 +935,17 @@
     return (b.created_at || "").localeCompare(a.created_at || "");
   }
 
+  // Shared by the overflow node's click and a hub's double-click (below) --
+  // a cluster is category x model, so narrowing both filters to one value
+  // each is what "show just this root cause" means.
+  function isolateCluster(category, model) {
+    footprintCategoryFilter = new Set([category]);
+    footprintModelFilter = new Set([model]);
+    renderFootprintCategoryFilter();
+    renderFootprintModelFilter();
+    applyFootprintFilters();
+  }
+
   function renderFootprintGraph(container, legendContainer, members) {
     container.textContent = "";
     legendContainer.textContent = "";
@@ -1399,6 +1410,7 @@
                 ? `⚠ ${n.alertCount} active alert${n.alertCount === 1 ? "" : "s"}`
                 : "No active alerts yet",
             ],
+            ["Double-click", "isolate this cluster"],
           ]);
         } else if (n.type === "overflow") {
           showTooltipForElement(g, [
@@ -1462,15 +1474,8 @@
         g.classList.remove("is-dragging");
         if (!drag.moved) {
           if (n.type === "overflow") {
-            // A click, not the hover tooltip, is the "commit to this" action
-            // -- narrows both filters that define this cluster (category x
-            // model) so the graph re-renders showing just it, same as
-            // double-clicking both chips individually would.
-            footprintCategoryFilter = new Set([n.category]);
-            footprintModelFilter = new Set([n.model]);
-            renderFootprintCategoryFilter();
-            renderFootprintModelFilter();
-            applyFootprintFilters();
+            // A click, not the hover tooltip, is the "commit to this" action.
+            isolateCluster(n.category, n.model);
           } else {
             renderDetail(n);
           }
@@ -1479,6 +1484,18 @@
       };
       hit.addEventListener("pointerup", endDrag);
       hit.addEventListener("pointercancel", endDrag);
+
+      // A hub's single click already opens its detail panel (below); double-
+      // click is the same "isolate this root cause" action as the overflow
+      // node's click and the Category/Model chips' own double-click, so all
+      // three ways of naming one cluster land on the same isolate behavior.
+      if (n.type === "hub") {
+        hit.addEventListener("dblclick", (evt) => {
+          evt.preventDefault();
+          const [category, model] = n.key.split(":");
+          isolateCluster(category, model);
+        });
+      }
 
       g.appendChild(hit);
 
@@ -2346,7 +2363,24 @@
       badge(INCIDENT_META[alert.incident_status] || { dot: "muted", label: alert.incident_status })
     );
 
+    // A human deciding whether to acknowledge, mitigate, or resolve should
+    // be able to see the actual post first -- this panel had every derived
+    // fact (summary, category, severity) but never the source itself, so
+    // "acknowledge" could only ever mean "trust the classifier," not "I
+    // looked."
+    if (alert.url) {
+      const postLink = document.createElement("a");
+      postLink.href = alert.url;
+      postLink.target = "_blank";
+      postLink.rel = "noopener noreferrer";
+      postLink.className = "post-link incident-post-link";
+      postLink.textContent = "View post ↗";
+      lifecycle.appendChild(postLink);
+    }
+
     const nextActions = INCIDENT_NEXT_ACTIONS[alert.incident_status] || [];
+    let resolveBtn = null;
+    let resolveHint = null;
     if (nextActions.length) {
       const noteInput = document.createElement("textarea");
       noteInput.className = "incident-note-input";
@@ -2359,18 +2393,79 @@
       nextActions.forEach(({ status, label }) => {
         const btn = document.createElement("button");
         btn.type = "button";
-        if (status === "resolved") btn.className = "approve";
-        btn.textContent = label;
-        if (status === "resolved" && !(alert.action_count > 0)) {
-          btn.disabled = true;
-          btn.title = "Log at least one action before resolving this alert.";
+        if (status === "resolved") {
+          btn.className = "approve";
+          resolveBtn = btn;
         }
-        btn.addEventListener("click", () => transitionIncident(alert.post_id, status, noteInput.value.trim()));
+        btn.textContent = label;
+        btn.addEventListener("click", async () => {
+          // Landing in acknowledged/mitigating/resolved triggers a real
+          // Claude call to draft the Course of Action -- a real couple of
+          // seconds, not instant. Without this, the button gave zero
+          // indication a click had even registered for that whole window,
+          // which read as "nothing happened" even on runs that succeeded a
+          // moment later.
+          actionRow.querySelectorAll("button").forEach((b) => {
+            b.disabled = true;
+          });
+          const originalLabel = btn.textContent;
+          btn.textContent = "Updating…";
+          const ok = await transitionIncident(alert.post_id, status, noteInput.value.trim());
+          // A successful transition changes what this panel should show --
+          // new incident status, new set of next actions (Resolved has none
+          // left), a fresh timeline entry -- none of which patch themselves
+          // in place. Re-opening with the now-updated alert from
+          // alertsAllRows (loadAlerts() inside transitionIncident() already
+          // refreshed it) is simpler and more reliable than trying to patch
+          // every piece of this panel by hand; still doesn't auto-close, so
+          // the confirmation is visible before a human closes it themselves.
+          if (ok) {
+            const fresh = alertsAllRows.find((a) => a.post_id === alert.post_id);
+            if (fresh) {
+              openAlertCardModal(fresh);
+              return;
+            }
+          }
+          // Failed (transitionIncident() already alerted why) or the fresh
+          // row went missing -- restore this row rather than leaving every
+          // button stuck disabled.
+          btn.textContent = originalLabel;
+          actionRow.querySelectorAll("button").forEach((b) => {
+            b.disabled = false;
+          });
+          updateResolveButtonState();
+        });
         actionRow.appendChild(btn);
       });
       lifecycle.appendChild(actionRow);
+
+      if (resolveBtn) {
+        // A hover title on a disabled button is easy to never see -- this is
+        // the same requirement, always visible, so "why won't Resolve do
+        // anything" has an answer on screen instead of only on hover.
+        resolveHint = document.createElement("p");
+        resolveHint.className = "incident-resolve-hint";
+        lifecycle.appendChild(resolveHint);
+      }
     }
     wrapper.appendChild(lifecycle);
+
+    // Resolve is gated on having logged at least one action -- re-evaluated
+    // (not just set once at initial render) because logging an action while
+    // this same panel is open must un-stick the button immediately. It was
+    // previously only ever set here, so logging an action updated the
+    // checklist and alert.action_count but left an already-rendered Resolve
+    // button stuck disabled until the modal was closed and reopened.
+    function updateResolveButtonState() {
+      if (!resolveBtn) return;
+      const eligible = alert.action_count > 0;
+      resolveBtn.disabled = !eligible;
+      resolveBtn.title = eligible ? "" : "Log at least one action before resolving this alert.";
+      if (resolveHint) {
+        resolveHint.textContent = eligible ? "" : "Log at least one action below to enable Resolve.";
+      }
+    }
+    updateResolveButtonState();
 
     // -- timeline --
     const timeline = document.createElement("div");
@@ -2433,6 +2528,7 @@
             const ok = await logAlertAction(alert.post_id, item, actionNoteInput.value.trim());
             if (ok) {
               alert.action_count = (alert.action_count || 0) + 1;
+              updateResolveButtonState();
               await refreshActions();
             }
             btn.disabled = false;
@@ -2679,6 +2775,7 @@
 
   async function handleBoardDrop(postId, newStatus) {
     const card = document.querySelector(`.board-card[data-post-id="${CSS.escape(postId)}"]`);
+    const preTransitionAlert = alertsAllRows.find((a) => a.post_id === postId);
     if (card) {
       card.classList.add("board-card--moving");
       const coaBox = card.querySelector(".board-card-coa");
@@ -2688,13 +2785,28 @@
     // transition (which includes a real Claude call to generate the COA, a
     // few real seconds) -- avoids a popup that feels laggy. Re-opens itself
     // once the fresh data lands, unless the user already closed it.
-    const preTransitionAlert = alertsAllRows.find((a) => a.post_id === postId);
     if (preTransitionAlert) openAlertCardModal(preTransitionAlert);
 
     const success = await transitionIncident(postId, newStatus);
 
+    if (!success) {
+      // transitionIncident() already alerted why (e.g. dragging a Mitigating
+      // card straight to Resolved with no logged action yet, same gate the
+      // modal's own Resolve button enforces). Without this, a declined drag
+      // left the card stuck at 0.6 opacity with pointer-events disabled --
+      // board-card--moving was only ever removed on the success path -- so
+      // it looked dead, not merely declined, until an unrelated reload fixed
+      // it.
+      if (card) {
+        card.classList.remove("board-card--moving");
+        const coaBox = card.querySelector(".board-card-coa");
+        if (coaBox) coaBox.textContent = (preTransitionAlert && preTransitionAlert.coa) || "";
+      }
+      return;
+    }
+
     const modal = document.getElementById("alert-card-modal");
-    if (success && !modal.hidden) {
+    if (!modal.hidden) {
       const alert = alertsAllRows.find((a) => a.post_id === postId);
       if (alert) openAlertCardModal(alert);
     }

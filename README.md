@@ -12,8 +12,9 @@ and post-incident reports, recurrence detection, dashboard-editable escalation c
 per-model protection tiers, a client × risk-pattern targeted-attack watchlist, a Kanban-style
 Board where claiming an alert and dragging it through its lifecycle auto-generates a
 Claude-written Course of Action with an actionable, per-category checklist, and a background
-scheduler that runs collection on its own, on a dashboard-editable interval, once you turn it
-on.** Collectors for Reddit, YouTube, Hacker News, Stack Overflow, GitHub Issues, and Mastodon
+scheduler that runs collection and classification on their own, each on its own
+dashboard-editable interval, once you turn them on.** Collectors for Reddit, YouTube, Hacker
+News, Stack Overflow, GitHub Issues, and Mastodon
 write a time series of post snapshots to SQLite; a Claude-based classifier labels pain points;
 a scorer turns accelerating pain points into alerts; a human QA gate reviews sensitive
 categories; a clustering step groups alerts by root cause and flags recurrence; a FastAPI +
@@ -359,12 +360,24 @@ deliberately so, since the raw `post_id` alone doesn't tell you which platform, 
 matched term you're looking at. A node that hasn't crossed the velocity threshold gets a **Send
 to Alerts** action in its detail panel — a human judgment call to track something the automated
 scoring didn't flag (`POST /api/watching/{post_id}/promote`, gated by the same QA rules a real
-alert would get). **Filtering**: click a platform swatch in the legend to hide/show its nodes
-(and any hub left with zero visible members), click a category chip above the graph to narrow
-to specific root causes, or use the client dropdown to isolate one watched enterprise client's
-posts — all three read from the full fetched set, so toggling is instant and doesn't re-fetch.
-A hub or satellite backed by a **flagship-tier** model (see "Escalation criteria and model
-protection" below) is flagged with a plain-text "Flagship"/"FLAGSHIP" label, not an icon.
+alert would get; the Watching table's own **Escalate** button, below, calls the same endpoint).
+
+**Filtering**: five independent dimensions, all client-side against the already-fetched set
+(toggling is instant, never re-fetches) — Platform (legend swatches), Category, Model (the
+other half of a cluster's key, `category x model_implicated` — narrowing both together isolates
+one specific root-cause cluster), Client (only shown when the current data has any watched-client
+hits), and Status/Board (Alert vs. Watching, plus an "on a Board (claimed) only" toggle). Every
+group has "All"/"None" bulk buttons, and every chip supports double-click to isolate just that
+one value. A hub or satellite backed by a **flagship-tier** model (see "Escalation criteria and
+model protection" below) is flagged with a plain-text "Flagship"/"FLAGSHIP" label, not an icon.
+
+**Cluster size cap**: a root-cause cluster can have hundreds of member posts (one hit 114 in
+practice) — past 8, the rest fold into a single dashed "+N" marker instead of each getting its
+own dot, which both keeps the graph legible and keeps the force simulation fast (it's O(n²) in
+total node count). The hub's own member count always reflects the true total regardless of how
+many have their own dot. Clicking "+N" isolates that cluster (sets the Category + Model filters
+to just that combination); once a filter has narrowed the view to one cluster the cap lifts
+entirely, so isolating actually shows everything in it, not a second, smaller cap on top.
 
 **Watching** is the filterable, sortable table of classified pain points that haven't (yet, or
 ever) become a real alert — every column is click-to-sort (▲/▼ indicator), except **Post**
@@ -379,7 +392,10 @@ into the incident lifecycle/brief/report panel described above. Both tables show
 term** so a client-scoped hit (e.g. `"McDonald's jailbreak"`) is visibly distinct from a
 generic one. Claim identity is a freeform "Claiming as" name persisted in the browser
 (no login system exists yet — see "Incident lifecycle" above for why that's a deliberate,
-not-yet-built line).
+not-yet-built line). Alerts also has an **Incident** filter (Open/Acknowledged/Mitigating/
+Resolved/Archived/False positive) alongside Category/Severity/Platform — "Archived" specifically
+means resolved *and* past the Board's 24h archive threshold (see below), so it's precisely what
+fell off the Board and nothing else.
 
 **Board** is a claimed alert's real home: a five-column Kanban (Open / Acknowledged /
 Mitigating / Resolved / False positive) scoped to *only* what you've claimed from the Alerts
@@ -391,9 +407,10 @@ context (`radar/brief.py`'s `generate_coa`) — paired with that category's conc
 report, lock the account, alert the platform). **Resolving requires at least one logged
 action** — enforced server-side, not just in the UI — so a card can't be waved through without
 anyone having actually done anything. Resolved cards fall off the Board 24h after resolution to
-keep it focused on active work (the header shows an honest "N archived" count); nothing is
-deleted, the Alerts table still shows everything regardless of age. Clicking a card opens the
-same incident detail panel as the table's Details toggle, in a modal.
+keep it focused on active work; nothing is deleted, and the header's honest "N archived" count
+is a clickable link straight to the Alerts tab's Incident filter, pre-set to "Archived," rather
+than just a number confirming something's out there somewhere. Clicking a card opens the same
+incident detail panel as the table's Details toggle, in a modal.
 
 **Settings** holds everything about *what* gets searched and how it's triaged, separated from
 the "what did we find" tabs above, organized into its own four sub-tabs (a plain JS tab strip,
@@ -503,7 +520,7 @@ network access required for any of it.
   Claude-generated executive briefs and post-incident reports (`radar/brief.py`), and recurrence
   detection (episodes, `RECURRENCE_GAP_HOURS`).
 - **Client filter, model protection, Kanban + Course-of-Action round (schema v6):** the
-  footprint graph's client dropdown filter (`footprintClientFilter` in
+  footprint graph's client chip filter (`footprintClientFilter` in
   `radar/static/dashboard.js`); per-model protection tiers (`config/model_tiers.yaml`,
   `radar/config.py`'s `protection_tier_for()`), threaded into scoring precedence (category →
   model → platform → global) and surfaced as a plain-text "Flagship" label on the Home tab
@@ -572,6 +589,24 @@ network access required for any of it.
   and the `radar review` CLI (`radar/qa.py`) were kept as-is — the CLI is a separate, scriptable
   surface this round didn't touch, and the column still exists (`NOT NULL`) so alerts still need
   a value written at creation time even though nothing displays it anymore.
+- **Footprint-graph declutter round:** the default view had grown to 438 nodes with no cap (one
+  cluster alone had 114 individual posts around a single hub) — slow (the force simulation is
+  O(n^2)) and unreadable. Each cluster now shows at most `MAX_SATELLITES_PER_HUB` (8) posts
+  individually (real alerts before Watching-only, higher severity and more recent first),
+  folding the rest into a "+N" overflow node that isolates the cluster on click rather than just
+  explaining itself; the cap lifts once a filter has narrowed the view to one cluster, so
+  isolating actually shows everything. Added Model and Status/Board filter dimensions (a cluster
+  is `category x model`, so Model is what actually lets you isolate one specific cluster without
+  a 30+-chip "cluster" filter) and "All"/"None" bulk buttons on every filter group, footprint
+  graph and old alike. Separately, ~36 simultaneous hubs were still overlapping each other even
+  after the cap (measured: centers 32px apart needing 44px of combined radius) — hubs now repel
+  each other 5x harder than other node pairs, and the canvas grows taller with hub count instead
+  of a fixed height, which took measured hub-hub overlaps to zero with no change in settle time.
+- **Alerts-archive round:** the Board's 24h resolved-card archiving (see above) had no
+  corresponding way to actually find what it hid — added an Incident status filter to the Alerts
+  tab (Open/Acknowledged/Mitigating/Resolved/Archived/False positive) reusing the Board's exact
+  `isArchivedResolved()` threshold for "Archived," and turned the Board's own "N archived" count
+  into a link straight into that filtered view.
 
 ## Data model
 

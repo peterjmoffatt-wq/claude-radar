@@ -4,5 +4,5 @@
 # is a separate opt-in from config/schedule.yaml, not folded into it.
 # Dashboard-editable (Settings tab) -- see radar/config.py and
 # radar/scheduler.py.
-enabled: true
+enabled: false
 interval_seconds: 7200
