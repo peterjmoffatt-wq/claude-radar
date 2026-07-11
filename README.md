@@ -290,14 +290,20 @@ persisted client-side and trusted at face value, the same way `note` fields alre
 real login is the obvious next step for a multi-person deployment, not an oversight.
 
 Expand any row in the Alerts tab (or click a card on the Board) via **Details** to work an
-incident directly: advance its status, log one of its category's checklist actions, generate a
-short **executive brief** (2-3 sentences, Claude-generated via the same `httpx`+forced-nothing
-pattern the classifier uses for structured classification, with a deterministic template
-fallback if `ANTHROPIC_API_KEY` is unset or the call fails), and — once you're done — generate
-a **post-incident report**: a Markdown document combining the hard facts, the full status
-timeline, a Claude-written "what happened" narrative, and your own closing note on what should
-change, downloadable as `.md` or copyable to the clipboard. The footprint graph's hub detail
-panel can generate the same kind of brief for a whole root-cause cluster, not just one alert.
+incident directly: a **View post** link at the top (so acknowledging or mitigating something
+means having actually looked at it, not just trusting the classifier's summary), advance its
+status, log one of its category's checklist actions, generate a short **executive brief** (2-3
+sentences, Claude-generated via the same `httpx`+forced-nothing pattern the classifier uses for
+structured classification, with a deterministic template fallback if `ANTHROPIC_API_KEY` is
+unset or the call fails), and — once you're done — generate a **post-incident report**: a
+Markdown document combining the hard facts, the full status timeline, a Claude-written "what
+happened" narrative, and your own closing note on what should change, downloadable as `.md` or
+copyable to the clipboard. Landing in acknowledged/mitigating/resolved (Course-of-Action
+generation) is a real Claude call, a couple of real seconds — the button disables and reads
+"Updating…" for that window rather than giving no feedback, and the panel re-opens itself with
+fresh data once it lands rather than going stale until manually closed and reopened. The
+footprint graph's hub detail panel can generate the same kind of brief for a whole root-cause
+cluster, not just one alert.
 
 ## Root-cause clusters
 
@@ -368,8 +374,10 @@ other half of a cluster's key, `category x model_implicated` — narrowing both 
 one specific root-cause cluster), Client (only shown when the current data has any watched-client
 hits), and Status/Board (Alert vs. Watching, plus an "on a Board (claimed) only" toggle). Every
 group has "All"/"None" bulk buttons, and every chip supports double-click to isolate just that
-one value. A hub or satellite backed by a **flagship-tier** model (see "Escalation criteria and
-model protection" below) is flagged with a plain-text "Flagship"/"FLAGSHIP" label, not an icon.
+one value — double-clicking a hub itself does the same thing (sets Category + Model to that
+cluster), so naming a root cause never requires the filter row at all. A hub or satellite backed
+by a **flagship-tier** model (see "Escalation criteria and model protection" below) is flagged
+with a plain-text "Flagship"/"FLAGSHIP" label, not an icon.
 
 **Cluster size cap**: a root-cause cluster can have hundreds of member posts (one hit 114 in
 practice) — past 8, the rest fold into a single dashed "+N" marker instead of each getting its
@@ -607,6 +615,24 @@ network access required for any of it.
   tab (Open/Acknowledged/Mitigating/Resolved/Archived/False positive) reusing the Board's exact
   `isArchivedResolved()` threshold for "Archived," and turned the Board's own "N archived" count
   into a link straight into that filtered view.
+- **Board lifecycle-bug round:** three real bugs found via direct testing, not just code
+  review. The incident detail panel's Resolve button set its disabled state once, at initial
+  render, and never re-checked it — logging an action correctly updated the checklist and the
+  action count but left an already-rendered Resolve button stuck disabled in the same modal
+  session. More broadly, the panel never refreshed after *any* successful transition (Acknowledge/
+  Start mitigating/Resolve), so it kept showing stale status and stale buttons until manually
+  closed and reopened; it now re-opens itself with fresh data after every transition, matching
+  how drag-and-drop already behaved. Separately, dragging a card straight to Resolved with no
+  logged action is correctly rejected server-side, but the failure path never reset the card --
+  `board-card--moving` (0.6 opacity, `pointer-events: none`) was only ever removed on success, so
+  a declined drag left the card permanently unclickable and stuck reading "Generating recommended
+  action…" until an unrelated reload fixed it. All three fixed and verified live (`radar/static/
+  dashboard.js`'s `buildIncidentDetailPanel()`/`handleBoardDrop()`). Also added: every transition
+  button now disables and reads "Updating…" while its real Claude call is in flight, since giving
+  no feedback for a multi-second wait was indistinguishable from being broken; and a **View post**
+  link at the top of the incident detail panel, since it had every derived fact but never linked
+  back to the source itself. Same round: double-clicking a footprint-graph hub isolates its
+  cluster, the same convention the overflow node and the filter chips already used.
 
 ## Data model
 
