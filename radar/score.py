@@ -24,12 +24,19 @@ from radar.db import (
 
 logger = logging.getLogger("radar.score")
 
+# Below this, a rate-per-hour is noise, not signal: two collections a couple
+# minutes apart (a double-clicked "Collect Now", or a manual run landing near
+# a scheduler tick) can show a few extra likes/comments that, divided by a
+# near-zero elapsed time, inflate into a wildly overstated velocity and fire
+# a spurious alert.
+MIN_ELAPSED_HOURS = 10 / 60  # 10 minutes
+
 
 def compute_velocity(history: list[tuple[datetime, float]]) -> float | None:
     """Virality-score change per hour between the two most recent snapshots.
 
-    None if there's fewer than two data points yet, or they're timestamped
-    identically (no elapsed time to compute a rate over).
+    None if there's fewer than two data points yet, or they're too close
+    together in time (< MIN_ELAPSED_HOURS) to compute a meaningful rate over.
     """
     if len(history) < 2:
         return None
@@ -37,7 +44,7 @@ def compute_velocity(history: list[tuple[datetime, float]]) -> float | None:
     prev_at, prev_score = history[-2]
     latest_at, latest_score = history[-1]
     elapsed_hours = (latest_at - prev_at).total_seconds() / 3600
-    if elapsed_hours <= 0:
+    if elapsed_hours < MIN_ELAPSED_HOURS:
         return None
 
     return (latest_score - prev_score) / elapsed_hours

@@ -9,6 +9,7 @@ from radar.classify import run_classification
 from radar.collect import run_collection
 from radar.config import Settings, load_classify_schedule_config, load_schedule_config
 from radar.db import get_connection, get_last_classified_at, get_last_collected_at, init_db
+from radar.score import run_scoring
 
 logger = logging.getLogger("radar.scheduler")
 
@@ -57,6 +58,11 @@ def classify_scheduler_tick(
     a different cadence, without touching collection at all. run_classification()
     itself already no-ops (logs + returns skipped=True) if no API key is
     configured, so this doesn't need its own guard for that.
+
+    Also runs run_scoring() (radar/score.py) right after classifying --
+    that's the only thing that actually turns a classified pain point into an
+    alert, and it's free/local (no API call), so there's no reason to make it
+    a separate opt-in the way classification itself is.
     """
     config = load_classify_schedule_config()
     if not config["enabled"]:
@@ -68,6 +74,7 @@ def classify_scheduler_tick(
 
     try:
         run_classification(settings)
+        run_scoring(settings)
     except Exception:
         logger.exception("Scheduled classification run failed")
     return now_fn()

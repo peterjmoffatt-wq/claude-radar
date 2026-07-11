@@ -91,6 +91,23 @@ def test_classify_scheduler_tick_runs_when_never_run_before(monkeypatch, setting
     assert result == 1000.0
 
 
+def test_classify_scheduler_tick_also_runs_scoring(monkeypatch, settings_factory):
+    # Classification alone never produces an alert -- run_scoring() is the
+    # only thing that does, so the classify tick must call both, not just
+    # run_classification().
+    monkeypatch.setattr(
+        "radar.scheduler.load_classify_schedule_config", lambda: {"enabled": True, "interval_seconds": 100}
+    )
+    monkeypatch.setattr("radar.scheduler.run_classification", lambda settings: None)
+    calls = []
+    monkeypatch.setattr("radar.scheduler.run_scoring", lambda settings: calls.append(settings))
+
+    result = classify_scheduler_tick(settings_factory(), last_run_epoch=None, now_fn=lambda: 1000.0)
+
+    assert len(calls) == 1
+    assert result == 1000.0
+
+
 def test_classify_scheduler_tick_skips_when_not_enough_time_elapsed(monkeypatch, settings_factory):
     monkeypatch.setattr(
         "radar.scheduler.load_classify_schedule_config", lambda: {"enabled": True, "interval_seconds": 100}

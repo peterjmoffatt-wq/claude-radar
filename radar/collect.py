@@ -9,7 +9,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Callable
 
 from radar.config import Settings, client_scoped_terms, effective_terms, get_settings, load_search_terms
-from radar.db import get_connection, get_last_collected_at, init_db, write_snapshots
+from radar.db import get_connection, get_last_collected_at, init_db, purge_old_raw_text, write_snapshots
 from radar.sources.github import GitHubSource
 from radar.sources.hackernews import HackerNewsSource
 from radar.sources.mastodon import MastodonSource
@@ -194,6 +194,7 @@ def run_collection(
                     "source=%s failed; skipping its remaining terms for this run.", source_name
                 )
                 sources_failed.append(source_name)
+        purge_old_raw_text(conn, settings.raw_text_retention_days)
     finally:
         conn.close()
 

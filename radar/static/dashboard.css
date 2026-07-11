@@ -673,7 +673,7 @@ button.run-collection:disabled {
 .footprint-card svg {
   display: block;
   width: 100%;
-  height: 920px;
+  min-height: 920px;
   background: var(--surface-1);
 }
 
@@ -1011,7 +1011,7 @@ td.num {
   text-align: right;
 }
 
-tr.is-loading {
+tbody.is-loading {
   opacity: 0.45;
   transition: opacity 0.15s ease;
 }
@@ -1445,6 +1445,21 @@ tbody tr {
 .board-card.board-card--moving {
   opacity: 0.6;
   pointer-events: none;
+}
+
+/* Resolved/False Positive cards: no summary, COA, or action row to show, so
+   the card itself gets denser padding/margins too -- not just fewer child
+   elements -- to fit noticeably more of them in view without scrolling. */
+.board-card--compact {
+  padding: 6px 8px;
+}
+
+.board-card--compact .board-card-badges {
+  margin-bottom: 2px;
+}
+
+.board-card--compact .board-card-category {
+  margin-bottom: 0;
 }
 
 .board-card-badges {

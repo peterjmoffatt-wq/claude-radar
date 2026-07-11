@@ -144,10 +144,10 @@
 
   function formatEngagement(row) {
     const parts = [];
-    if (row.likes) parts.push(`👍${row.likes.toLocaleString()}`);
-    if (row.comments) parts.push(`💬${row.comments.toLocaleString()}`);
-    if (row.score) parts.push(`↑${row.score.toLocaleString()}`);
-    if (row.shares) parts.push(`⇄${row.shares.toLocaleString()}`);
+    if (row.likes) parts.push(`${row.likes.toLocaleString()} likes`);
+    if (row.comments) parts.push(`${row.comments.toLocaleString()} comments`);
+    if (row.score) parts.push(`${row.score.toLocaleString()} score`);
+    if (row.shares) parts.push(`${row.shares.toLocaleString()} shares`);
     return parts.join(" · ");
   }
 
@@ -513,6 +513,14 @@
   // and only ever applies to alerts (watching posts have no claimed_by), so
   // there's no "isolate one of several values" case to support.
   let footprintClaimedOnly = false;
+  // Which node's detail panel is open, tracked by a stable identity (not a
+  // direct node reference -- renderFootprintGraph() rebuilds `nodes` from
+  // scratch on every filter change/reload, so any previous node object is
+  // stale). Lets a full rebuild (e.g. the reload after "Send to Alerts",
+  // which needs fresh data to flip a node from hollow to solid) restore the
+  // same selection instead of silently dropping back to the "Click a node…"
+  // hint out from under whatever the user was just looking at.
+  let footprintSelectedKey = null;
 
   const STATUS_FILTER_VALUES = [
     { value: "alert", label: "Alert" },
@@ -1053,6 +1061,13 @@
 
     const svg = document.createElementNS(SVG_NS, "svg");
     svg.setAttribute("viewBox", `0 0 ${width} ${height}`);
+    // Without this, the element's rendered height stays whatever the CSS
+    // default is (920px) while the viewBox grows with clusterList.length --
+    // default preserveAspectRatio ("meet") then just scales the whole
+    // drawing down to fit, so past a couple dozen hubs everything shrinks
+    // (labels included) instead of the canvas actually scrolling taller, the
+    // exact opposite of the "taller canvas, zero overlap" intent above.
+    svg.style.height = `${height}px`;
     svg.setAttribute("role", "img");
     const title = document.createElementNS(SVG_NS, "title");
     title.textContent =
@@ -1118,6 +1133,9 @@
     }
 
     function renderDetail(n) {
+      footprintSelectedKey =
+        n.type === "hub" ? `hub:${n.key}` : n.type === "satellite" ? `sat:${n.member.post_id}` : null;
+
       // Same-poster rings are toggled per-selection, not per-node-creation --
       // always clear before deciding whether to re-apply below.
       nodes.forEach((o) => {
@@ -1148,7 +1166,7 @@
         addRow(
           "Status",
           n.alertCount > 0
-            ? `⚠ ${n.alertCount} active alert${n.alertCount === 1 ? "" : "s"}`
+            ? `${n.alertCount} active alert${n.alertCount === 1 ? "" : "s"}`
             : "No active alerts yet"
         );
         if (n.protectionTier === "flagship") {
@@ -1407,7 +1425,7 @@
             [
               "Status",
               n.alertCount > 0
-                ? `⚠ ${n.alertCount} active alert${n.alertCount === 1 ? "" : "s"}`
+                ? `${n.alertCount} active alert${n.alertCount === 1 ? "" : "s"}`
                 : "No active alerts yet",
             ],
             ["Double-click", "isolate this cluster"],
@@ -1652,6 +1670,20 @@
     }
     wake();
 
+    // Restore whatever was selected before this rebuild, if it still exists
+    // in the new node set -- without this, any reload (a filter change, or
+    // the background refresh after promoting a post to Alerts) silently
+    // resets the detail panel to the "Click a node…" hint, wiping out
+    // feedback the user just triggered before they've had a chance to read it.
+    if (footprintSelectedKey) {
+      const reselected = nodes.find((n) => {
+        const key =
+          n.type === "hub" ? `hub:${n.key}` : n.type === "satellite" ? `sat:${n.member.post_id}` : null;
+        return key === footprintSelectedKey;
+      });
+      if (reselected) renderDetail(reselected);
+    }
+
     // Style key: solid vs. hollow means alert vs. watching, independent of platform --
     // grouped and labeled separately so the neutral swatch doesn't read as a platform color.
     const statusGroup = document.createElement("div");
@@ -1752,9 +1784,9 @@
   const INCIDENT_RANK = Object.fromEntries(Object.keys(INCIDENT_META).map((k, i) => [k, i]));
 
   // A single sortable number for the Engagement column's multi-metric
-  // display (👍/💬/↑/⇄ are different units on different platforms -- this
-  // isn't meant to be a precise cross-platform score, just "more reactions
-  // of any kind sorts higher").
+  // display (likes/comments/score/shares are different units on different
+  // platforms -- this isn't meant to be a precise cross-platform score, just
+  // "more reactions of any kind sorts higher").
   function engagementTotal(r) {
     return (r.likes || 0) + (r.comments || 0) + (r.score || 0) + (r.shares || 0);
   }
@@ -2002,13 +2034,19 @@
     };
   }
 
-  // Category/severity are server-side filters (existing /api/alerts params);
-  // platform/incident are applied client-side against the fetched set below,
-  // alongside sorting, without needing new server-side query params.
+  // All four filters (category/severity/platform/incident) are applied
+  // client-side against the one fully-loaded set below -- alertsAllRows is
+  // never itself filtered by loadAlerts(), so the Board (built from
+  // alertsAllRows.filter(claimed_by), below) and focusPostInTable() can
+  // always find any claimed/targeted alert regardless of what these four
+  // dropdowns currently say.
   function applyAlertsView() {
     const tbody = document.getElementById("alerts-body");
-    const { platform, incident } = currentFilters();
-    let rows = platform ? alertsAllRows.filter((a) => a.platform === platform) : alertsAllRows;
+    const { category, severity, platform, incident } = currentFilters();
+    let rows = alertsAllRows;
+    if (category) rows = rows.filter((a) => a.category === category);
+    if (severity) rows = rows.filter((a) => a.severity === severity);
+    if (platform) rows = rows.filter((a) => a.platform === platform);
     if (incident === "archived") {
       // Same 24h-since-resolved threshold as the Board's own archiving
       // (isArchivedResolved(), below) -- the whole point of this filter
@@ -2030,13 +2068,8 @@
     const tbody = document.getElementById("alerts-body");
     tbody.classList.add("is-loading");
 
-    const filters = currentFilters();
-    const params = new URLSearchParams();
-    if (filters.category) params.set("category", filters.category);
-    if (filters.severity) params.set("severity", filters.severity);
-
     try {
-      alertsAllRows = await fetchJSON("/api/alerts?" + params.toString());
+      alertsAllRows = await fetchJSON("/api/alerts");
       applyAlertsView();
     } catch (err) {
       tbody.textContent = "";
@@ -2349,7 +2382,18 @@
     }
   }
 
-  function buildIncidentDetailPanel(alert) {
+  // `isModal` distinguishes the two hosts this same panel gets rendered
+  // into: the Board/card modal (#alert-card-modal), and the Alerts table's
+  // inline expandable row (openAlertDetail(), below). Only the modal case
+  // needs to explicitly reopen itself after a transition -- the table case
+  // already gets a fresh instance for free (transitionIncident() awaits
+  // loadAlerts(), which re-renders the table and, since expandedAlertPostId
+  // still matches, re-expands this exact row with the updated alert). Without
+  // this flag, the table path used to call openAlertCardModal() too -- which
+  // doesn't visibly do anything at the time (the modal lives inside the
+  // hidden Board tab), but leaves it armed, so the next time the user opens
+  // Board they get an unexpected stale full-screen overlay.
+  function buildIncidentDetailPanel(alert, { isModal = false } = {}) {
     const wrapper = document.createElement("div");
     wrapper.className = "incident-detail-panel";
 
@@ -2420,9 +2464,15 @@
           // every piece of this panel by hand; still doesn't auto-close, so
           // the confirmation is visible before a human closes it themselves.
           if (ok) {
-            const fresh = alertsAllRows.find((a) => a.post_id === alert.post_id);
-            if (fresh) {
-              openAlertCardModal(fresh);
+            if (isModal) {
+              const fresh = alertsAllRows.find((a) => a.post_id === alert.post_id);
+              if (fresh) {
+                openAlertCardModal(fresh);
+                return;
+              }
+            } else {
+              // This panel instance has already been replaced in the DOM
+              // by loadAlerts()'s re-render above -- nothing left to update.
               return;
             }
           }
@@ -2685,7 +2735,7 @@
     const modal = document.getElementById("alert-card-modal");
     const body = document.getElementById("alert-card-modal-body");
     body.textContent = "";
-    body.appendChild(buildIncidentDetailPanel(alert));
+    body.appendChild(buildIncidentDetailPanel(alert, { isModal: true }));
     modal.hidden = false;
   }
 
@@ -2693,9 +2743,15 @@
     document.getElementById("alert-card-modal").hidden = true;
   }
 
-  function renderAlertCard(alert) {
+  // `compact` drops everything a Resolved/False Positive card doesn't need
+  // anymore -- the summary, the COA, and the log-action row are all about
+  // deciding/tracking work that's already done by the time a card lands in
+  // one of those two terminal columns. Full detail (including all of the
+  // above) is still one click away via "View details ->", which every card
+  // keeps regardless of mode.
+  function renderAlertCard(alert, { compact = false } = {}) {
     const card = document.createElement("div");
-    card.className = "board-card";
+    card.className = "board-card" + (compact ? " board-card--compact" : "");
     card.draggable = true;
     card.dataset.postId = alert.post_id;
     card.tabIndex = 0;
@@ -2715,36 +2771,38 @@
     if (alert.client) category.textContent += ` · ${alert.client}`;
     card.appendChild(category);
 
-    const summary = document.createElement("p");
-    summary.className = "board-card-summary";
-    summary.textContent = alert.issue_summary;
-    card.appendChild(summary);
+    if (!compact) {
+      const summary = document.createElement("p");
+      summary.className = "board-card-summary";
+      summary.textContent = alert.issue_summary;
+      card.appendChild(summary);
 
-    const coaBox = document.createElement("p");
-    coaBox.className = "board-card-coa";
-    coaBox.textContent = alert.coa || "";
-    card.appendChild(coaBox);
+      const coaBox = document.createElement("p");
+      coaBox.className = "board-card-coa";
+      coaBox.textContent = alert.coa || "";
+      card.appendChild(coaBox);
 
-    const actionsRow = document.createElement("div");
-    actionsRow.className = "board-card-actions";
-    const primaryItem = (alert.action_items && alert.action_items[0]) || "Log action taken";
-    const logActionBtn = document.createElement("button");
-    logActionBtn.type = "button";
-    logActionBtn.textContent = primaryItem;
-    logActionBtn.addEventListener("click", async (evt) => {
-      evt.stopPropagation();
-      logActionBtn.disabled = true;
-      await logAlertAction(alert.post_id, primaryItem, alert.coa || "");
-      logActionBtn.disabled = false;
-    });
-    actionsRow.appendChild(logActionBtn);
-    if (alert.action_count > 0) {
-      const loggedTag = document.createElement("span");
-      loggedTag.className = "action-logged-tag";
-      loggedTag.textContent = "Action logged";
-      actionsRow.appendChild(loggedTag);
+      const actionsRow = document.createElement("div");
+      actionsRow.className = "board-card-actions";
+      const primaryItem = (alert.action_items && alert.action_items[0]) || "Log action taken";
+      const logActionBtn = document.createElement("button");
+      logActionBtn.type = "button";
+      logActionBtn.textContent = primaryItem;
+      logActionBtn.addEventListener("click", async (evt) => {
+        evt.stopPropagation();
+        logActionBtn.disabled = true;
+        await logAlertAction(alert.post_id, primaryItem, alert.coa || "");
+        logActionBtn.disabled = false;
+      });
+      actionsRow.appendChild(logActionBtn);
+      if (alert.action_count > 0) {
+        const loggedTag = document.createElement("span");
+        loggedTag.className = "action-logged-tag";
+        loggedTag.textContent = "Action logged";
+        actionsRow.appendChild(loggedTag);
+      }
+      card.appendChild(actionsRow);
     }
-    card.appendChild(actionsRow);
 
     const openBtn = document.createElement("button");
     openBtn.type = "button";
@@ -2864,9 +2922,10 @@
       }
       column.appendChild(header);
 
+      const compact = status === "resolved" || status === "false_positive";
       const cardsContainer = document.createElement("div");
       cardsContainer.className = "board-column-cards";
-      columnAlerts.forEach((alert) => cardsContainer.appendChild(renderAlertCard(alert)));
+      columnAlerts.forEach((alert) => cardsContainer.appendChild(renderAlertCard(alert, { compact })));
       column.appendChild(cardsContainer);
 
       column.addEventListener("dragover", (evt) => {
@@ -3681,8 +3740,8 @@
   document.getElementById("save-classify-schedule-btn").addEventListener("click", saveClassifySchedule);
   loadClassifyScheduleCard();
 
-  document.getElementById("filter-category").addEventListener("change", loadAlerts);
-  document.getElementById("filter-severity").addEventListener("change", loadAlerts);
+  document.getElementById("filter-category").addEventListener("change", applyAlertsView);
+  document.getElementById("filter-severity").addEventListener("change", applyAlertsView);
   document.getElementById("filter-alerts-platform").addEventListener("change", applyAlertsView);
   document.getElementById("filter-incident").addEventListener("change", applyAlertsView);
 

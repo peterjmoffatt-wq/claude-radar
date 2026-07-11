@@ -31,6 +31,7 @@ from radar.config import (
     save_search_terms,
 )
 from radar.db import (
+    AlertAlreadyClaimedError,
     claim_alert,
     count_advertisements,
     get_alert_actions,
@@ -53,7 +54,7 @@ from radar.db import (
     write_alert,
 )
 from radar.leadtime import compute_lead_times, summarize_lead_times
-from radar.score import compute_velocity
+from radar.score import compute_velocity, run_scoring
 
 STATIC_DIR = Path(__file__).parent / "static"
 
@@ -290,7 +291,10 @@ def api_collect(body: CollectRequest) -> dict:
     production version would background this instead.
     """
     settings = get_settings()
-    requested = set(body.sources) if body.sources else None
+    # `is not None`, not truthiness: an explicit empty list ("I deselected
+    # every source picker checkbox") must mean "collect nothing", not be
+    # silently treated the same as `sources` being omitted entirely.
+    requested = set(body.sources) if body.sources is not None else None
     result = run_collection(settings, sources=requested)
 
     available = source_availability(settings)
@@ -311,22 +315,42 @@ def api_collect(body: CollectRequest) -> dict:
 @app.post("/api/classify")
 def api_classify() -> dict:
     """Triggers a real classification pass over whatever's currently
-    unclassified (up to CLASSIFY_BATCH_LIMIT posts) and reports what happened.
-    Runs synchronously in-request, same "fine at this scale" tradeoff as
-    /api/collect above. Calls the paid Anthropic API -- unlike /api/collect,
-    this isn't run implicitly by anything else in the UI.
+    unclassified (up to CLASSIFY_BATCH_LIMIT posts), then immediately scores
+    the results so any newly-classified pain point that already crosses its
+    velocity threshold turns into a real alert in the same request -- without
+    this, nothing but the `radar score` CLI or a manual "send to Alerts"
+    click ever calls run_scoring(), so classifying from the dashboard would
+    otherwise never actually produce an alert. Runs synchronously in-request,
+    same "fine at this scale" tradeoff as /api/collect above. Calls the paid
+    Anthropic API -- unlike /api/collect, this isn't run implicitly by
+    anything else in the UI.
     """
     settings = get_settings()
     result = run_classification(settings)
-    return {"posts_classified": result.posts_classified, "skipped": result.skipped}
+    scoring = run_scoring(settings)
+    return {
+        "posts_classified": result.posts_classified,
+        "skipped": result.skipped,
+        "alerts_written": scoring.alerts_written,
+    }
 
 
 def _search_terms_payload(config: dict) -> dict:
+    effective = effective_terms(config)
+    # Same cross-product count effective_terms() itself builds from (generic
+    # terms + every client x risk_pattern pair) -- if that's more than
+    # MAX_EFFECTIVE_TERMS, some cross-product terms were silently dropped and
+    # the dashboard should be able to say so rather than just showing a
+    # shorter-than-expected list with no explanation.
+    total_possible = len(config.get("terms", [])) + len(config.get("clients", [])) * len(
+        config.get("risk_patterns", [])
+    )
     return {
         "terms": config.get("terms", []),
         "clients": config.get("clients", []),
         "risk_patterns": config.get("risk_patterns", []),
-        "effective_terms": effective_terms(config),
+        "effective_terms": effective,
+        "effective_terms_truncated": total_possible > len(effective),
         "max_items": MAX_WATCHLIST_ITEMS,
     }
 
@@ -390,6 +414,13 @@ def api_alert_transition(post_id: str, body: IncidentTransition) -> dict:
     try:
         alert = _get_one_alert(conn, post_id)
 
+        if body.status == alert["incident_status"]:
+            # No-op: already in this column (a duplicate drop, a double-
+            # submitted request). Returning early avoids both logging a
+            # from==to junk timeline event and re-billing/regenerating the
+            # Claude COA call below for nothing.
+            return {"post_id": post_id, "incident_status": body.status, "coa": alert["coa"]}
+
         if body.status == "resolved" and not get_alert_actions(conn, post_id):
             raise HTTPException(
                 status_code=400, detail="Log at least one action before resolving this alert."
@@ -425,7 +456,12 @@ def api_alert_claim(post_id: str, body: ClaimRequest) -> dict:
     """
     conn = _connect()
     try:
-        changed = claim_alert(conn, post_id, body.claimed_by)
+        try:
+            changed = claim_alert(conn, post_id, body.claimed_by)
+        except AlertAlreadyClaimedError as exc:
+            raise HTTPException(
+                status_code=409, detail=f"Already claimed by {exc.claimed_by}."
+            ) from exc
     finally:
         conn.close()
     if not changed:
@@ -455,9 +491,11 @@ class AlertActionRequest(BaseModel):
 def api_alert_log_action(post_id: str, body: AlertActionRequest) -> dict:
     """Records that a human carried out one of the category's recommended
     action items for this alert -- gates api_alert_transition()'s move to
-    'resolved'. `action_item` must be one of that category's action_items
-    (not accepted freeform) so the log can't drift from what the board
-    displays.
+    'resolved'. When the category has a configured action_items checklist,
+    `action_item` must be one of those entries, so the log can't drift from
+    what the board displays; a category with no checklist configured (an
+    empty action_items list) has nothing to validate against and accepts a
+    freeform description instead.
     """
     conn = _connect()
     try:

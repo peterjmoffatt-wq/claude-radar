@@ -18,6 +18,19 @@ def test_compute_velocity_none_when_elapsed_time_is_zero():
     assert compute_velocity([(BASE, 10.0), (BASE, 20.0)]) is None
 
 
+def test_compute_velocity_none_when_elapsed_time_is_below_the_floor():
+    # A double-clicked "Collect Now" (or a manual run landing seconds after a
+    # scheduler tick) a couple of minutes apart shouldn't produce a rate --
+    # too little elapsed time to mean anything, even though it's nonzero.
+    history = [(BASE, 10.0), (BASE + timedelta(minutes=5), 20.0)]
+    assert compute_velocity(history) is None
+
+
+def test_compute_velocity_computes_rate_at_the_floor_boundary():
+    history = [(BASE, 10.0), (BASE + timedelta(minutes=10), 20.0)]
+    assert compute_velocity(history) == 60.0
+
+
 def test_compute_velocity_computes_rate_per_hour():
     history = [(BASE, 10.0), (BASE + timedelta(hours=2), 50.0)]
     assert compute_velocity(history) == 20.0

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import sqlite3
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from radar.config import Settings
@@ -256,6 +256,22 @@ def write_snapshots(
     )
     conn.commit()
     return len(rows)
+
+
+def purge_old_raw_text(conn: sqlite3.Connection, retention_days: int) -> int:
+    """Clears raw_text on snapshots older than retention_days -- the privacy
+    knob Settings.raw_text_retention_days (radar/config.py) implies, but
+    nothing was actually enforcing until this existed: hashing authors while
+    keeping the raw post text forever wasn't matching the stated retention
+    policy. Returns the number of rows cleared.
+    """
+    cutoff = (datetime.now(timezone.utc) - timedelta(days=retention_days)).isoformat()
+    cursor = conn.execute(
+        "UPDATE snapshots SET raw_text = NULL WHERE raw_text IS NOT NULL AND collected_at < ?",
+        (cutoff,),
+    )
+    conn.commit()
+    return cursor.rowcount
 
 
 def get_unclassified_posts(conn: sqlite3.Connection, limit: int) -> list[tuple[str, str, str, str]]:
@@ -547,14 +563,34 @@ def resolve_alert(conn: sqlite3.Connection, post_id: str, decision: str) -> bool
     return True
 
 
+class AlertAlreadyClaimedError(RuntimeError):
+    """Raised by claim_alert() when the alert is already claimed by someone
+    else -- lets the API layer return a clear 409 instead of one PM silently
+    stealing another PM's claimed card (see radar/api.py's api_alert_claim()).
+    """
+
+    def __init__(self, claimed_by: str):
+        super().__init__(f"Already claimed by {claimed_by}")
+        self.claimed_by = claimed_by
+
+
 def claim_alert(conn: sqlite3.Connection, post_id: str, claimed_by: str) -> bool:
     """Assigns the post's latest alert to a PM's personal Board -- claimed_by is
     freeform (no auth system exists yet). Returns whether a row was actually
-    updated (False if no alert exists for post_id).
+    updated (False if no alert exists for post_id). Re-claiming with the same
+    name is idempotent (returns True, no-op); claiming a post someone else
+    already has raises AlertAlreadyClaimedError rather than silently
+    overwriting their claim.
     """
-    alert_id = _latest_alert_id(conn, post_id)
-    if alert_id is None:
+    row = conn.execute(
+        "SELECT id, claimed_by FROM alerts WHERE post_id = ? ORDER BY triggered_at DESC, id DESC LIMIT 1",
+        (post_id,),
+    ).fetchone()
+    if row is None:
         return False
+    alert_id, existing_claimed_by = row
+    if existing_claimed_by is not None and existing_claimed_by != claimed_by:
+        raise AlertAlreadyClaimedError(existing_claimed_by)
     conn.execute(
         "UPDATE alerts SET claimed_by = ?, claimed_at = ? WHERE id = ?",
         (claimed_by, datetime.now(timezone.utc).isoformat(), alert_id),
@@ -651,21 +687,49 @@ def write_alert(
     severity: str,
     qa_status: str,
 ) -> None:
-    conn.execute(
-        """
-        INSERT INTO alerts (post_id, triggered_at, virality_score, velocity, category, severity, qa_status)
-        VALUES (?, ?, ?, ?, ?, ?, ?)
-        """,
-        (
-            post_id,
-            datetime.now(timezone.utc).isoformat(),
-            virality_score_value,
-            velocity,
-            category,
-            severity,
-            qa_status,
-        ),
+    """Writes a fresh alert for post_id, unless its latest alert is already
+    claimed or actively being worked (incident_status acknowledged/
+    mitigating) -- in that case, refreshes that same row in place instead.
+
+    Without this, a re-alert on an incident a PM already claimed and is
+    mid-response on (e.g. an accelerating velocity re-triggering run_scoring())
+    would insert a brand-new row that becomes "latest": the claim, the
+    incident_status, and the timeline all silently vanish from the PM's Board.
+    An 'open' (unclaimed, untouched) alert still gets a new row on re-alert --
+    that's the existing "re-alert while nobody's looked at it yet" behavior
+    (see get_alerts()/_latest_alert_id() picking the newest row).
+    """
+    row = conn.execute(
+        "SELECT id, incident_status, qa_status, claimed_by FROM alerts WHERE post_id = ? "
+        "ORDER BY triggered_at DESC, id DESC LIMIT 1",
+        (post_id,),
+    ).fetchone()
+    now = datetime.now(timezone.utc).isoformat()
+
+    in_progress = row is not None and (
+        row[3] is not None or row[1] not in ("open", "resolved", "false_positive")
     )
+    if in_progress:
+        alert_id, _, existing_qa_status, _ = row
+        # Don't let a re-alert silently undo an already-decided QA review.
+        if existing_qa_status in ("approved", "rejected"):
+            qa_status = existing_qa_status
+        conn.execute(
+            """
+            UPDATE alerts SET triggered_at = ?, virality_score = ?, velocity = ?,
+                category = ?, severity = ?, qa_status = ?
+            WHERE id = ?
+            """,
+            (now, virality_score_value, velocity, category, severity, qa_status, alert_id),
+        )
+    else:
+        conn.execute(
+            """
+            INSERT INTO alerts (post_id, triggered_at, virality_score, velocity, category, severity, qa_status)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (post_id, now, virality_score_value, velocity, category, severity, qa_status),
+        )
     conn.commit()
 
 

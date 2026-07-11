@@ -3,7 +3,10 @@ from __future__ import annotations
 import sqlite3
 from datetime import datetime, timedelta, timezone
 
+import pytest
+
 from radar.db import (
+    AlertAlreadyClaimedError,
     claim_alert,
     count_advertisements,
     get_alert_actions,
@@ -606,6 +609,32 @@ def test_claim_alert_returns_false_when_no_alert_exists(tmp_path):
     assert changed is False
 
 
+def test_claim_alert_reclaiming_with_same_name_is_idempotent(tmp_path):
+    conn = get_connection(tmp_path / "radar.db")
+    init_db(conn)
+    write_alert(conn, "t3_reclaim", 10.0, 5.0, "product_bug", "high", "not_required")
+    claim_alert(conn, "t3_reclaim", "Alex")
+
+    changed = claim_alert(conn, "t3_reclaim", "Alex")
+    conn.close()
+
+    assert changed is True
+
+
+def test_claim_alert_raises_when_already_claimed_by_someone_else(tmp_path):
+    conn = get_connection(tmp_path / "radar.db")
+    init_db(conn)
+    write_alert(conn, "t3_stolen", 10.0, 5.0, "product_bug", "high", "not_required")
+    claim_alert(conn, "t3_stolen", "Alex")
+
+    with pytest.raises(AlertAlreadyClaimedError):
+        claim_alert(conn, "t3_stolen", "Priya")
+
+    row = conn.execute("SELECT claimed_by FROM alerts WHERE post_id = 't3_stolen'").fetchone()
+    conn.close()
+    assert row[0] == "Alex"  # Alex's claim survives Priya's rejected attempt.
+
+
 def test_release_alert_clears_claim(tmp_path):
     conn = get_connection(tmp_path / "radar.db")
     init_db(conn)
@@ -691,6 +720,78 @@ def test_new_alert_defaults_to_open_incident_status(tmp_path):
     status = conn.execute("SELECT incident_status FROM alerts WHERE post_id = 't3_new'").fetchone()
     conn.close()
     assert status == ("open",)
+
+
+def test_write_alert_inserts_new_row_for_unclaimed_open_alert(tmp_path):
+    # An 'open', never-claimed incident re-alerting keeps the existing
+    # "each acceleration is its own row" behavior (see
+    # test_run_scoring_suppresses_repeat_alert_unless_accelerating in
+    # test_score.py, which relies on this to count 2 rows).
+    conn = get_connection(tmp_path / "radar.db")
+    init_db(conn)
+    write_alert(conn, "t3_reopen", 10.0, 5.0, "product_bug", "high", "not_required")
+
+    write_alert(conn, "t3_reopen", 20.0, 15.0, "product_bug", "high", "not_required")
+
+    count = conn.execute("SELECT COUNT(*) FROM alerts WHERE post_id = 't3_reopen'").fetchone()[0]
+    conn.close()
+    assert count == 2
+
+
+def test_write_alert_updates_in_place_when_claimed(tmp_path):
+    # A re-alert on a claimed-but-still-open incident must not insert a new
+    # row -- that would silently drop the claim (a fresh row's claimed_by is
+    # NULL) out from under the PM working it.
+    conn = get_connection(tmp_path / "radar.db")
+    init_db(conn)
+    write_alert(conn, "t3_claimed_realert", 10.0, 5.0, "product_bug", "high", "not_required")
+    claim_alert(conn, "t3_claimed_realert", "Alex")
+
+    write_alert(conn, "t3_claimed_realert", 30.0, 25.0, "product_bug", "high", "not_required")
+
+    count = conn.execute(
+        "SELECT COUNT(*) FROM alerts WHERE post_id = 't3_claimed_realert'"
+    ).fetchone()[0]
+    row = conn.execute(
+        "SELECT claimed_by, velocity FROM alerts WHERE post_id = 't3_claimed_realert'"
+    ).fetchone()
+    conn.close()
+    assert count == 1
+    assert row[0] == "Alex"
+    assert row[1] == 25.0
+
+
+def test_write_alert_updates_in_place_when_acknowledged_even_if_unclaimed(tmp_path):
+    conn = get_connection(tmp_path / "radar.db")
+    init_db(conn)
+    write_alert(conn, "t3_ack_realert", 10.0, 5.0, "product_bug", "high", "not_required")
+    transition_incident(conn, "t3_ack_realert", "acknowledged")
+
+    write_alert(conn, "t3_ack_realert", 30.0, 25.0, "product_bug", "high", "not_required")
+
+    count = conn.execute("SELECT COUNT(*) FROM alerts WHERE post_id = 't3_ack_realert'").fetchone()[0]
+    status = conn.execute(
+        "SELECT incident_status FROM alerts WHERE post_id = 't3_ack_realert'"
+    ).fetchone()[0]
+    conn.close()
+    assert count == 1
+    assert status == "acknowledged"  # a re-alert must not snap this back to 'open'
+
+
+def test_write_alert_inserts_fresh_row_after_resolved(tmp_path):
+    # A genuinely closed incident recurring later starts a new episode --
+    # unlike the claimed/in-progress case above, this should get a new row.
+    conn = get_connection(tmp_path / "radar.db")
+    init_db(conn)
+    write_alert(conn, "t3_recur", 10.0, 5.0, "product_bug", "high", "not_required")
+    log_alert_action(conn, "t3_recur", "File engineering ticket")
+    transition_incident(conn, "t3_recur", "resolved")
+
+    write_alert(conn, "t3_recur", 30.0, 25.0, "product_bug", "high", "not_required")
+
+    count = conn.execute("SELECT COUNT(*) FROM alerts WHERE post_id = 't3_recur'").fetchone()[0]
+    conn.close()
+    assert count == 2
 
 
 def test_transition_incident_updates_status_and_logs_event(tmp_path):

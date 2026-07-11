@@ -74,12 +74,15 @@ def _call_claude(
                 },
             )
             response.raise_for_status()
+            data = response.json()
         except httpx.HTTPError as exc:
             raise BriefGenerationError(f"Claude brief/report request failed: {exc}") from exc
+        except ValueError as exc:
+            raise BriefGenerationError(f"Claude brief/report response was not valid JSON: {exc}") from exc
 
-    data = response.json()
-    for block in data.get("content", []):
-        if block.get("type") == "text" and block.get("text", "").strip():
+    content = data.get("content", []) if isinstance(data, dict) else []
+    for block in content:
+        if isinstance(block, dict) and block.get("type") == "text" and block.get("text", "").strip():
             return block["text"].strip()
     raise BriefGenerationError("Claude response had no usable text content block")
 

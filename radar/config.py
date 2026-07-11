@@ -10,12 +10,20 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from radar.models import ModelImplicated, PainCategory
 
-DEFAULT_SEARCH_TERMS_PATH = Path("config/search_terms.yaml")
-DEFAULT_KNOWN_INCIDENTS_PATH = Path("config/known_incidents.yaml")
-DEFAULT_ESCALATION_CRITERIA_PATH = Path("config/escalation_criteria.yaml")
-DEFAULT_MODEL_TIERS_PATH = Path("config/model_tiers.yaml")
-DEFAULT_SCHEDULE_PATH = Path("config/schedule.yaml")
-DEFAULT_CLASSIFY_SCHEDULE_PATH = Path("config/classify_schedule.yaml")
+# Anchored to the repo root (not left as a bare relative path) so every
+# default resolves the same regardless of the process's current working
+# directory -- `radar serve` (or any script importing this module) launched
+# from outside the repo root would otherwise silently read/write config
+# files (and, for Settings.database_path below, the SQLite database itself)
+# in whatever directory it happened to be started from.
+_REPO_ROOT = Path(__file__).resolve().parent.parent
+
+DEFAULT_SEARCH_TERMS_PATH = _REPO_ROOT / "config" / "search_terms.yaml"
+DEFAULT_KNOWN_INCIDENTS_PATH = _REPO_ROOT / "config" / "known_incidents.yaml"
+DEFAULT_ESCALATION_CRITERIA_PATH = _REPO_ROOT / "config" / "escalation_criteria.yaml"
+DEFAULT_MODEL_TIERS_PATH = _REPO_ROOT / "config" / "model_tiers.yaml"
+DEFAULT_SCHEDULE_PATH = _REPO_ROOT / "config" / "schedule.yaml"
+DEFAULT_CLASSIFY_SCHEDULE_PATH = _REPO_ROOT / "config" / "classify_schedule.yaml"
 
 # Applies to each of the terms/clients/risk_patterns lists independently --
 # enforced in the API layer (radar/api.py), not here, so this stays a plain
@@ -217,7 +225,7 @@ class Settings(BaseSettings):
     recurrence_gap_hours: float = 48.0
 
     # Storage
-    database_path: Path = Path("data/radar.db")
+    database_path: Path = _REPO_ROOT / "data" / "radar.db"
 
     # Classifier
     anthropic_api_key: str = ""
@@ -282,9 +290,17 @@ def get_settings() -> Settings:
 
 
 def load_search_terms(path: Path = DEFAULT_SEARCH_TERMS_PATH) -> dict[str, Any]:
-    with open(path, encoding="utf-8") as f:
-        data = yaml.safe_load(f)
-    data = data or {}
+    """Same missing-file-falls-back-to-empty shape as load_escalation_criteria()/
+    load_model_tiers() below -- a request landing before the watchlist has ever
+    been saved (or `radar serve` started from a working directory where the
+    file genuinely doesn't exist) gets an empty-but-valid config, not a 500.
+    """
+    if path.exists():
+        with open(path, encoding="utf-8") as f:
+            data = yaml.safe_load(f)
+        data = data or {}
+    else:
+        data = {}
     data.setdefault("subreddits", [])
     data.setdefault("terms", [])
     data.setdefault("clients", [])
@@ -350,6 +366,8 @@ def effective_terms(search_config: dict[str, Any]) -> list[str]:
 
 
 def load_known_incidents(path: Path = DEFAULT_KNOWN_INCIDENTS_PATH) -> list[dict[str, Any]]:
+    if not path.exists():
+        return []
     with open(path, encoding="utf-8") as f:
         data = yaml.safe_load(f)
     return (data or {}).get("incidents", [])

@@ -350,6 +350,26 @@ def test_api_collect_defaults_to_every_configured_source(settings_factory, monke
     }
 
 
+def test_api_collect_with_empty_sources_list_collects_nothing(settings_factory, monkeypatch):
+    # An explicit empty list ("every source picker checkbox deselected") must
+    # mean "collect nothing" -- distinct from omitting `sources` entirely,
+    # which means "every configured source" (see the test above).
+    settings = settings_factory()
+    monkeypatch.setattr(api_module, "get_settings", lambda: settings)
+    test_client = TestClient(api_module.app)
+
+    response = test_client.post("/api/collect", json={"sources": []})
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body == {
+        "snapshots_written": 0,
+        "sources_run": [],
+        "sources_skipped_unconfigured": [],
+        "sources_failed": [],
+    }
+
+
 def test_api_get_search_terms_returns_current_config(tmp_path, monkeypatch):
     yaml_path = tmp_path / "search_terms.yaml"
     yaml_path.write_text(
@@ -464,6 +484,29 @@ def test_api_alert_transition_updates_status(settings_factory, monkeypatch):
     assert body["post_id"] == "t3_a"
     assert body["incident_status"] == "acknowledged"
     assert body["coa"]  # template fallback still produces something
+
+
+def test_api_alert_transition_is_a_no_op_when_already_in_that_status(settings_factory, monkeypatch):
+    # A duplicate drop/double-submitted request landing on the column the
+    # alert is already in must not log a junk from==to timeline event, and
+    # (the expensive part) must not re-call Claude for a new COA -- no respx
+    # mock configured at all, so a real call would fail/hang this test.
+    settings = settings_factory(anthropic_api_key="")
+    monkeypatch.setattr(api_module, "get_settings", lambda: settings)
+    test_client = TestClient(api_module.app)
+    conn = get_connection(settings.database_path)
+    init_db(conn)
+    _seed_alert(conn, "t3_a")
+    conn.close()
+    test_client.post("/api/alerts/t3_a/transition", json={"status": "acknowledged"})
+
+    response = test_client.post("/api/alerts/t3_a/transition", json={"status": "acknowledged"})
+
+    assert response.status_code == 200
+    assert response.json()["incident_status"] == "acknowledged"
+
+    timeline = test_client.get("/api/alerts/t3_a/timeline").json()
+    assert len(timeline) == 1  # only the first, genuine transition was logged
 
 
 def test_api_alert_transition_404_when_no_alert(client):
@@ -1072,6 +1115,22 @@ def test_api_alert_claim_returns_404_for_unknown_post(client):
     assert response.status_code == 404
 
 
+def test_api_alert_claim_returns_409_when_already_claimed_by_someone_else(client):
+    test_client, settings = client
+    conn = get_connection(settings.database_path)
+    init_db(conn)
+    _seed_alert(conn, "t3_contested", category="product_bug")
+    conn.close()
+
+    test_client.post("/api/alerts/t3_contested/claim", json={"claimed_by": "Alex"})
+    response = test_client.post("/api/alerts/t3_contested/claim", json={"claimed_by": "Priya"})
+
+    assert response.status_code == 409
+
+    alerts = test_client.get("/api/alerts").json()
+    assert alerts[0]["claimed_by"] == "Alex"  # Alex's claim wasn't overwritten
+
+
 def test_api_get_schedule_returns_defaults_and_last_collected_at(tmp_path, monkeypatch, client):
     test_client, settings = client
     # Isolated from config/schedule.yaml's real, dashboard-editable contents
@@ -1214,3 +1273,41 @@ def test_api_classify_runs_and_reports_count(client, load_anthropic_fixture):
     row = conn.execute("SELECT post_id FROM classifications WHERE post_id = 't3_new'").fetchone()
     conn.close()
     assert row is not None
+
+
+@respx.mock
+def test_api_classify_also_scores_and_writes_an_alert(client, load_anthropic_fixture):
+    # /api/classify is the dashboard's Classify button -- without also
+    # calling run_scoring(), a newly-classified pain point that already
+    # crosses its velocity threshold would never turn into a real alert
+    # anywhere in the running app (only the `radar score` CLI would).
+    test_client, settings = client
+    conn = get_connection(settings.database_path)
+    init_db(conn)
+    conn.execute(
+        "INSERT INTO snapshots (post_id, platform, poll_run_id, collected_at, created_at, url, "
+        "raw_text, search_pass, virality_score) VALUES "
+        "('t3_new', 'reddit', 'run-1', '2024-01-01T00:00:00+00:00', '2024-01-01T00:00:00+00:00', "
+        "'https://x/t3_new', 'Getting 529s constantly.', 'top', 10.0)"
+    )
+    conn.execute(
+        "INSERT INTO snapshots (post_id, platform, poll_run_id, collected_at, created_at, url, "
+        "raw_text, search_pass, virality_score) VALUES "
+        "('t3_new', 'reddit', 'run-2', '2024-01-01T01:00:00+00:00', '2024-01-01T00:00:00+00:00', "
+        "'https://x/t3_new', 'Getting 529s constantly.', 'top', 50.0)"
+    )
+    conn.commit()
+    conn.close()
+    respx.post(ANTHROPIC_API_URL).mock(
+        return_value=httpx.Response(200, json=load_anthropic_fixture("classify_pain_point.json"))
+    )
+
+    response = test_client.post("/api/classify")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["posts_classified"] == 1
+    assert body["alerts_written"] == 1
+
+    alerts = test_client.get("/api/alerts").json()
+    assert [a["post_id"] for a in alerts] == ["t3_new"]
