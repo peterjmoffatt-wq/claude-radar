@@ -461,6 +461,8 @@ def test_api_alerts_includes_incident_and_brief_fields(client):
     assert body["exec_brief_generated_at"] is None
     assert body["incident_report"] is None
     assert body["incident_report_generated_at"] is None
+    assert body["technical_explanation"] is None
+    assert body["technical_explanation_generated_at"] is None
 
 
 def test_api_alert_transition_updates_status(settings_factory, monkeypatch):
@@ -586,6 +588,60 @@ def test_api_alert_brief_generates_and_persists(client, load_anthropic_fixture):
 def test_api_alert_brief_404_when_no_alert(client):
     test_client, _settings = client
     response = test_client.post("/api/alerts/nonexistent/brief")
+    assert response.status_code == 404
+
+
+@respx.mock
+def test_api_alert_explain_generates_and_persists(client, load_anthropic_fixture):
+    test_client, settings = client
+    conn = get_connection(settings.database_path)
+    init_db(conn)
+    _seed_alert(conn, "t3_a")
+    # _seed_alert() doesn't set raw_text (real posts often won't have it
+    # captured, or it's aged out) -- set it explicitly here to exercise the
+    # "grounded in the full original text" happy path.
+    conn.execute("UPDATE snapshots SET raw_text = ? WHERE post_id = 't3_a'", ("The full original post text.",))
+    conn.commit()
+    conn.close()
+    respx.post(ANTHROPIC_API_URL).mock(
+        return_value=httpx.Response(200, json=load_anthropic_fixture("brief_text_response.json"))
+    )
+
+    response = test_client.post("/api/alerts/t3_a/explain")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["post_id"] == "t3_a"
+    assert "Recommend eng triage" in body["technical_explanation"]
+
+    conn = get_connection(settings.database_path)
+    stored = conn.execute(
+        "SELECT technical_explanation FROM alerts WHERE post_id='t3_a'"
+    ).fetchone()[0]
+    conn.close()
+    assert stored == body["technical_explanation"]
+
+
+def test_api_alert_explain_falls_back_when_raw_text_not_retained(client):
+    # No respx mock at all -- if this accidentally tried to call Claude, the
+    # test would hang/fail on a real network attempt, proving no call
+    # happens when there's no raw_text to ground an explanation in.
+    test_client, settings = client
+    conn = get_connection(settings.database_path)
+    init_db(conn)
+    _seed_alert(conn, "t3_a")  # raw_text stays NULL
+    conn.close()
+
+    response = test_client.post("/api/alerts/t3_a/explain")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert "no longer retained" in body["technical_explanation"]
+
+
+def test_api_alert_explain_404_when_no_alert(client):
+    test_client, _settings = client
+    response = test_client.post("/api/alerts/nonexistent/explain")
     assert response.status_code == 404
 
 

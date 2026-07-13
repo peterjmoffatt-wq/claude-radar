@@ -16,6 +16,10 @@ logger = logging.getLogger("radar.brief")
 MAX_BRIEF_TOKENS = 200
 MAX_REPORT_NARRATIVE_TOKENS = 400
 MAX_COA_TOKENS = 150
+MAX_EXPLANATION_TOKENS = 350
+# Same bound classify.py uses when building its own classification prompt --
+# keeps this prompt's size (and cost) bounded the same way.
+EXPLANATION_MAX_TEXT_CHARS = 4000
 
 
 class BriefGenerationError(RuntimeError):
@@ -198,6 +202,58 @@ def generate_coa(
     except BriefGenerationError:
         logger.warning("Falling back to templated COA for %r", facts.subject)
         return _template_coa(facts, playbook)
+
+
+def _build_explanation_prompt(facts: BriefFacts, raw_text: str) -> str:
+    return (
+        "You are explaining a technical issue report to a Program Manager who needs to "
+        "actually understand what's going wrong, not skim a one-line summary -- but who "
+        "isn't necessarily a Claude API engineer either. Explain in plain but precise "
+        "language: what's actually happening, the likely mechanism or root cause if it "
+        "can be reasonably inferred from the text below, and why it matters. Ground every "
+        "claim only in the text provided -- don't invent details that aren't there, and "
+        "say so if the text doesn't give enough to infer a cause. 3-5 sentences, no "
+        "headings, no preamble, don't just restate the category or severity.\n\n"
+        f"Category: {facts.category}\n"
+        f"Severity: {facts.severity}\n"
+        f"Platform(s): {', '.join(facts.platforms) or 'unknown'}\n\n"
+        f"Original post text:\n{raw_text}"
+    )
+
+
+def generate_technical_explanation(
+    settings: Settings,
+    facts: BriefFacts,
+    raw_text: str | None,
+    sleep_fn: Callable[[float], None] = time.sleep,
+) -> str:
+    """A longer, technical explanation of the underlying issue grounded in
+    the post's full original text -- distinct from the exec brief (short,
+    audience is leadership, no technical depth) and the 120-char
+    issue_summary (a table-row label, not meant to explain anything).
+
+    Falls back to the issue_summary itself, with a note, if raw_text was
+    never captured or has since aged out (see radar/db.py's
+    purge_old_raw_text() / Settings.raw_text_retention_days) -- there's
+    nothing left to ground a real explanation in at that point. Also falls
+    back (without the note) if Claude is unavailable or the call fails.
+    """
+    if not raw_text:
+        return (
+            facts.issue_summary
+            + " (The original post text is no longer retained, so this is just the "
+            "classifier's short summary, not a full explanation.)"
+        )
+    try:
+        return _call_claude(
+            settings,
+            _build_explanation_prompt(facts, raw_text[:EXPLANATION_MAX_TEXT_CHARS]),
+            MAX_EXPLANATION_TOKENS,
+            sleep_fn,
+        )
+    except BriefGenerationError:
+        logger.warning("Falling back to the issue summary for %r's technical explanation", facts.subject)
+        return facts.issue_summary
 
 
 # (from_status, to_status, note, coa, created_at)

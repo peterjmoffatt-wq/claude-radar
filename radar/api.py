@@ -8,7 +8,13 @@ from fastapi import FastAPI, HTTPException
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from radar.brief import BriefFacts, generate_coa, generate_exec_brief, generate_incident_report
+from radar.brief import (
+    BriefFacts,
+    generate_coa,
+    generate_exec_brief,
+    generate_incident_report,
+    generate_technical_explanation,
+)
 from radar.cluster import ClusterSummary, get_clusters
 from radar.collect import run_collection, source_availability
 from radar.classify import run_classification
@@ -41,6 +47,7 @@ from radar.db import (
     get_incident_timeline,
     get_last_classified_at,
     get_last_collected_at,
+    get_latest_raw_text,
     get_snapshot_history,
     get_unscored_pain_points,
     init_db,
@@ -50,6 +57,7 @@ from radar.db import (
     save_coa,
     save_exec_brief,
     save_incident_report,
+    save_technical_explanation,
     transition_incident,
     write_alert,
 )
@@ -105,6 +113,8 @@ def _alert_dict(row: tuple) -> dict:
         "incident_report_generated_at",
         "coa",
         "coa_generated_at",
+        "technical_explanation",
+        "technical_explanation_generated_at",
         "action_count",
         "resolved_at",
         "claimed_by",
@@ -568,6 +578,27 @@ def api_alert_brief(post_id: str) -> dict:
     finally:
         conn.close()
     return {"post_id": post_id, "brief": brief}
+
+
+@app.post("/api/alerts/{post_id}/explain")
+def api_alert_technical_explanation(post_id: str) -> dict:
+    """Generates (or regenerates) a longer, technical explanation of the
+    underlying issue, grounded in the post's full original text -- not the
+    120-char issue_summary the Alerts/Board tables show, which is meant to
+    be scannable, not explanatory. Persisted the same way the exec brief is,
+    so it isn't silently re-billed every time the panel is opened.
+    """
+    conn = _connect()
+    try:
+        alert = _get_one_alert(conn, post_id)
+        raw_text = get_latest_raw_text(conn, post_id)
+        explanation = generate_technical_explanation(
+            get_settings(), _facts_from_alert(alert, load_model_tiers()), raw_text
+        )
+        save_technical_explanation(conn, post_id, explanation)
+    finally:
+        conn.close()
+    return {"post_id": post_id, "technical_explanation": explanation}
 
 
 @app.post("/api/clusters/{cluster_key}/brief")

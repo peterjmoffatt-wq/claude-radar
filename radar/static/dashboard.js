@@ -2517,6 +2517,45 @@
     }
     updateResolveButtonState();
 
+    // -- technical explanation --
+    // Distinct from the 120-char issue_summary shown in the Alerts/Board
+    // tables (a scannable label, not an explanation) and from the exec
+    // brief below (short, non-technical, written for leadership) -- this is
+    // grounded in the post's full original text so a PM can actually follow
+    // a dense technical report, not just skim it. On-demand (not
+    // auto-generated on open) to avoid a Claude call every time this panel
+    // is opened, same as the exec brief/report sections.
+    const explanationSection = document.createElement("div");
+    explanationSection.className = "incident-section";
+    const explanationHeading = document.createElement("h4");
+    explanationHeading.textContent = "Technical explanation";
+    explanationSection.appendChild(explanationHeading);
+    const explainBtn = document.createElement("button");
+    explainBtn.type = "button";
+    explainBtn.textContent = alert.technical_explanation ? "Regenerate explanation" : "Explain this issue";
+    explanationSection.appendChild(explainBtn);
+    const explanationText = document.createElement("p");
+    explanationText.className = "detail-brief";
+    explanationText.textContent = alert.technical_explanation || "";
+    explanationSection.appendChild(explanationText);
+    explainBtn.addEventListener("click", async () => {
+      explainBtn.disabled = true;
+      explainBtn.textContent = "Explaining…";
+      try {
+        const res = await fetch(`/api/alerts/${encodeURIComponent(alert.post_id)}/explain`, { method: "POST" });
+        if (!res.ok) throw new Error("explain request failed");
+        const data = await res.json();
+        explanationText.textContent = data.technical_explanation;
+        alert.technical_explanation = data.technical_explanation;
+      } catch (err) {
+        explanationText.textContent = "Failed to generate explanation.";
+      } finally {
+        explainBtn.disabled = false;
+        explainBtn.textContent = "Regenerate explanation";
+      }
+    });
+    wrapper.appendChild(explanationSection);
+
     // -- timeline --
     const timeline = document.createElement("div");
     timeline.className = "incident-section";

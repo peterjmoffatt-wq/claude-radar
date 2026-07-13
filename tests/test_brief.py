@@ -4,7 +4,13 @@ import httpx
 import pytest
 import respx
 
-from radar.brief import BriefFacts, generate_coa, generate_exec_brief, generate_incident_report
+from radar.brief import (
+    BriefFacts,
+    generate_coa,
+    generate_exec_brief,
+    generate_incident_report,
+    generate_technical_explanation,
+)
 from radar.classify import API_URL
 
 
@@ -246,6 +252,57 @@ def test_generate_coa_sends_no_tool_use(settings_factory, load_anthropic_fixture
     settings = settings_factory()
 
     generate_coa(settings, _facts(), "playbook text", "acknowledged", sleep_fn=lambda s: None)
+
+    import json
+
+    body = json.loads(route.calls.last.request.content)
+    assert "tools" not in body
+    assert "tool_choice" not in body
+
+
+@respx.mock
+def test_generate_technical_explanation_returns_claude_text(settings_factory, load_anthropic_fixture):
+    respx.post(API_URL).mock(
+        return_value=httpx.Response(200, json=load_anthropic_fixture("brief_text_response.json"))
+    )
+    settings = settings_factory()
+
+    explanation = generate_technical_explanation(
+        settings, _facts(), "Full raw post text describing the bug in detail.", sleep_fn=lambda s: None
+    )
+
+    assert "Recommend eng triage" in explanation
+
+
+def test_generate_technical_explanation_falls_back_when_raw_text_missing(settings_factory):
+    settings = settings_factory()
+
+    explanation = generate_technical_explanation(settings, _facts(), None, sleep_fn=lambda s: None)
+
+    assert explanation.startswith("Claude Code deletes the wrong plugin during cleanup.")
+    assert "no longer retained" in explanation
+
+
+@respx.mock
+def test_generate_technical_explanation_falls_back_to_issue_summary_on_api_error(settings_factory):
+    respx.post(API_URL).mock(return_value=httpx.Response(503))
+    settings = settings_factory()
+
+    explanation = generate_technical_explanation(
+        settings, _facts(), "Full raw post text.", sleep_fn=lambda s: None
+    )
+
+    assert explanation == "Claude Code deletes the wrong plugin during cleanup."
+
+
+@respx.mock
+def test_generate_technical_explanation_sends_no_tool_use(settings_factory, load_anthropic_fixture):
+    route = respx.post(API_URL).mock(
+        return_value=httpx.Response(200, json=load_anthropic_fixture("brief_text_response.json"))
+    )
+    settings = settings_factory()
+
+    generate_technical_explanation(settings, _facts(), "Full raw post text.", sleep_fn=lambda s: None)
 
     import json
 

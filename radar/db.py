@@ -9,7 +9,7 @@ from radar.hashing import hash_author
 from radar.models import Classification, RawPost
 from radar.virality import virality_score
 
-SCHEMA_VERSION = "8"
+SCHEMA_VERSION = "9"
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS snapshots (
@@ -70,6 +70,13 @@ CREATE TABLE IF NOT EXISTS alerts (
     -- regenerate shape as exec_brief. See radar/brief.py's generate_coa().
     coa                           TEXT,
     coa_generated_at              TEXT,
+    -- A longer, technical explanation of the underlying issue, grounded in
+    -- the post's full original text rather than the 120-char issue_summary
+    -- -- for a PM who needs to actually understand a dense technical report,
+    -- not just skim a table row. Same fast-read/overwrite-on-regenerate
+    -- shape as exec_brief. See radar/brief.py's generate_technical_explanation().
+    technical_explanation                    TEXT,
+    technical_explanation_generated_at       TEXT,
     -- Which PM has this alert on their personal Board (freeform name, no
     -- auth system exists) -- distinct from incident_status/qa_status: an
     -- alert can sit unclaimed in the team-wide Alerts tab indefinitely.
@@ -183,6 +190,10 @@ def _migrate(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE alerts ADD COLUMN claimed_by TEXT")
     if "claimed_at" not in alerts_columns:
         conn.execute("ALTER TABLE alerts ADD COLUMN claimed_at TEXT")
+    if "technical_explanation" not in alerts_columns:
+        conn.execute("ALTER TABLE alerts ADD COLUMN technical_explanation TEXT")
+    if "technical_explanation_generated_at" not in alerts_columns:
+        conn.execute("ALTER TABLE alerts ADD COLUMN technical_explanation_generated_at TEXT")
 
     incident_events_columns = {
         row[1] for row in conn.execute("PRAGMA table_info(incident_events)").fetchall()
@@ -471,6 +482,7 @@ def get_alerts(
                a.incident_status, a.exec_brief, a.exec_brief_generated_at,
                a.incident_report, a.incident_report_generated_at,
                a.coa, a.coa_generated_at,
+               a.technical_explanation, a.technical_explanation_generated_at,
                (SELECT COUNT(*) FROM alert_actions aa WHERE aa.post_id = a.post_id) AS action_count,
                (SELECT MAX(created_at) FROM incident_events
                 WHERE alert_id = a.id AND to_status = 'resolved') AS resolved_at,
@@ -865,6 +877,36 @@ def save_coa(conn: sqlite3.Connection, post_id: str, coa: str) -> bool:
     )
     conn.commit()
     return True
+
+
+def save_technical_explanation(conn: sqlite3.Connection, post_id: str, explanation: str) -> bool:
+    """Persists the generated technical explanation on the post's latest
+    alert row -- same fast-read/overwrite-on-regenerate shape as save_coa().
+    """
+    alert_id = _latest_alert_id(conn, post_id)
+    if alert_id is None:
+        return False
+    conn.execute(
+        "UPDATE alerts SET technical_explanation = ?, technical_explanation_generated_at = ? WHERE id = ?",
+        (explanation, datetime.now(timezone.utc).isoformat(), alert_id),
+    )
+    conn.commit()
+    return True
+
+
+def get_latest_raw_text(conn: sqlite3.Connection, post_id: str) -> str | None:
+    """The most recent snapshot's raw post text for post_id, if it's still
+    retained -- None if the post was never snapshotted with text, or its
+    raw_text has since aged out via purge_old_raw_text() (see
+    Settings.raw_text_retention_days). Callers (generate_technical_explanation)
+    must handle the None case, not assume it's always there.
+    """
+    row = conn.execute(
+        "SELECT raw_text FROM snapshots WHERE post_id = ? AND raw_text IS NOT NULL "
+        "ORDER BY collected_at DESC, id DESC LIMIT 1",
+        (post_id,),
+    ).fetchone()
+    return row[0] if row is not None else None
 
 
 def get_cluster_brief(conn: sqlite3.Connection, cluster_key: str) -> str | None:

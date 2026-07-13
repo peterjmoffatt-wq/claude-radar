@@ -14,6 +14,7 @@ from radar.db import (
     get_cluster_brief,
     get_connection,
     get_incident_timeline,
+    get_latest_raw_text,
     get_snapshot_history,
     get_unscored_pain_points,
     init_db,
@@ -23,6 +24,7 @@ from radar.db import (
     save_coa,
     save_exec_brief,
     save_incident_report,
+    save_technical_explanation,
     transition_incident,
     write_alert,
     write_classifications,
@@ -711,6 +713,42 @@ def test_migrate_adds_claim_columns_to_pre_existing_database(tmp_path):
     assert {"claimed_by", "claimed_at"} <= alerts_columns
 
 
+def test_migrate_adds_technical_explanation_columns_to_pre_existing_database(tmp_path):
+    # Simulates a database file created before schema v9 (no
+    # technical_explanation/technical_explanation_generated_at columns) --
+    # confirms init_db() adds them without losing data.
+    db_path = tmp_path / "old.db"
+    conn = sqlite3.connect(db_path)
+    conn.execute(
+        """
+        CREATE TABLE alerts (
+            id                            INTEGER PRIMARY KEY AUTOINCREMENT,
+            post_id                       TEXT NOT NULL,
+            triggered_at                  TEXT NOT NULL,
+            virality_score                REAL NOT NULL,
+            velocity                      REAL NOT NULL,
+            category                      TEXT NOT NULL,
+            severity                      TEXT NOT NULL,
+            qa_status                     TEXT NOT NULL
+        )
+        """
+    )
+    conn.execute(
+        "INSERT INTO alerts (post_id, triggered_at, virality_score, velocity, category, "
+        "severity, qa_status) VALUES ('t3_old4', '2024-01-01T00:00:00+00:00', 10.0, 5.0, "
+        "'product_bug', 'high', 'not_required')"
+    )
+    conn.commit()
+    conn.close()
+
+    conn = get_connection(db_path)
+    init_db(conn)
+
+    alerts_columns = {row[1] for row in conn.execute("PRAGMA table_info(alerts)").fetchall()}
+    conn.close()
+    assert {"technical_explanation", "technical_explanation_generated_at"} <= alerts_columns
+
+
 def test_new_alert_defaults_to_open_incident_status(tmp_path):
     conn = get_connection(tmp_path / "radar.db")
     init_db(conn)
@@ -940,6 +978,92 @@ def test_save_coa_returns_false_when_no_alert_exists(tmp_path):
     conn.close()
 
     assert changed is False
+
+
+def test_save_technical_explanation_persists_and_returns_true(tmp_path):
+    conn = get_connection(tmp_path / "radar.db")
+    init_db(conn)
+    write_alert(conn, "t3_explain", 10.0, 5.0, "product_bug", "high", "not_required")
+
+    changed = save_technical_explanation(conn, "t3_explain", "The retry loop never backs off.")
+
+    row = conn.execute(
+        "SELECT technical_explanation, technical_explanation_generated_at "
+        "FROM alerts WHERE post_id = 't3_explain'"
+    ).fetchone()
+    conn.close()
+    assert changed is True
+    assert row[0] == "The retry loop never backs off."
+    assert row[1]
+
+
+def test_save_technical_explanation_returns_false_when_no_alert_exists(tmp_path):
+    conn = get_connection(tmp_path / "radar.db")
+    init_db(conn)
+
+    changed = save_technical_explanation(conn, "t3_missing", "some explanation")
+    conn.close()
+
+    assert changed is False
+
+
+def test_get_latest_raw_text_returns_most_recent_snapshot_text(tmp_path):
+    conn = get_connection(tmp_path / "radar.db")
+    init_db(conn)
+    conn.execute(
+        "INSERT INTO snapshots (post_id, platform, poll_run_id, collected_at, created_at, url, "
+        "raw_text, search_pass) VALUES ('t3_raw', 'reddit', 'run-1', "
+        "'2024-01-01T00:00:00+00:00', '2024-01-01T00:00:00+00:00', 'https://x/t3_raw', "
+        "'older text', 'top')"
+    )
+    conn.execute(
+        "INSERT INTO snapshots (post_id, platform, poll_run_id, collected_at, created_at, url, "
+        "raw_text, search_pass) VALUES ('t3_raw', 'reddit', 'run-2', "
+        "'2024-01-01T01:00:00+00:00', '2024-01-01T00:00:00+00:00', 'https://x/t3_raw', "
+        "'newer text', 'top')"
+    )
+    conn.commit()
+
+    raw_text = get_latest_raw_text(conn, "t3_raw")
+    conn.close()
+
+    assert raw_text == "newer text"
+
+
+def test_get_latest_raw_text_none_when_never_captured(tmp_path):
+    conn = get_connection(tmp_path / "radar.db")
+    init_db(conn)
+
+    raw_text = get_latest_raw_text(conn, "t3_missing")
+    conn.close()
+
+    assert raw_text is None
+
+
+def test_get_latest_raw_text_skips_purged_rows(tmp_path):
+    # Simulates purge_old_raw_text() having cleared the latest snapshot's
+    # raw_text but not an older one -- must not return None just because the
+    # single latest row happens to be purged when older text still exists.
+    conn = get_connection(tmp_path / "radar.db")
+    init_db(conn)
+    conn.execute(
+        "INSERT INTO snapshots (post_id, platform, poll_run_id, collected_at, created_at, url, "
+        "raw_text, search_pass) VALUES ('t3_purged', 'reddit', 'run-1', "
+        "'2024-01-01T00:00:00+00:00', '2024-01-01T00:00:00+00:00', 'https://x/t3_purged', "
+        "'still here', 'top')"
+    )
+    conn.execute(
+        "INSERT INTO snapshots (post_id, platform, poll_run_id, collected_at, created_at, url, "
+        "raw_text, search_pass) VALUES ('t3_purged', 'reddit', 'run-2', "
+        "'2024-01-01T01:00:00+00:00', '2024-01-01T00:00:00+00:00', 'https://x/t3_purged', "
+        "NULL, 'top')"
+    )
+    conn.commit()
+
+    raw_text = get_latest_raw_text(conn, "t3_purged")
+    conn.close()
+
+    assert raw_text == "still here"
 
 
 def test_cluster_brief_save_and_get_round_trip(tmp_path):
